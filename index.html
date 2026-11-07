@@ -22,11 +22,20 @@
   // offers 同屏双人 (both players on one device) instead.
   var netAvailable = !window.DARK_XIANGQI_STATIC;
   var hotseat = false;
+  var pickDifficulty = false;
+  // 人机难度：简单随机，中等贪心，困难带前瞻搜索。
+  var DIFFICULTY = 'medium';
+  var DIFF_LABELS = {easy:'简单', medium:'中等', hard:'困难'};
+  var DIFF_ORDER = ['easy','medium','hard'];
+  var PIECE_VALUE = {pawn:1, advisor:2, elephant:2, horse:4, cannon:4.5, rook:9, king:100};
+  var MATE = 10000;
+  try { var savedDiff = localStorage.getItem('dark-xiangqi-difficulty'); if (savedDiff && DIFF_LABELS[savedDiff]) DIFFICULTY = savedDiff; } catch (e) {}
+  function setDifficulty(d) { if (!DIFF_LABELS[d]) return; DIFFICULTY = d; try { localStorage.setItem('dark-xiangqi-difficulty', d); } catch (e) {} }
   var blurBuffer = document.createElement('canvas'), blurContext = blurBuffer.getContext('2d');
   var resultEffect=null;
   var online=null, onlineEpoch=0, onlineBusy=false, onlineSelecting=0, pollTimer=null, confirmExit=false, rematchBusy=false;
   function leaveOnline(){onlineEpoch++;online=null;onlineBusy=false;onlineSelecting++;confirmExit=false;flipped=false;rematchBusy=false;if(pollTimer)clearTimeout(pollTimer);pollTimer=null;}
-  function leaveRoom(){leaveOnline();phase='title';board=null;notice='已退出房间';captures=[];selected=null;targets=[];}
+  function leaveRoom(){leaveOnline();pickDifficulty=false;phase='title';board=null;notice='已退出房间';captures=[];selected=null;targets=[];}
   function api(path,options){return fetch(path,options).then(function(r){return r.json().catch(function(){throw new Error('服务响应无效');}).then(function(data){if(!r.ok)throw new Error(data.error||'请求失败');return data;});});}
   function post(path,data){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),cache:'no-store'});}
   function query(path,extra){var p=new URLSearchParams({room:online.room,token:online.token});if(extra)Object.keys(extra).forEach(function(k){p.set(k,extra[k]);});return api(path+'?'+p.toString(),{cache:'no-store'});}
@@ -100,6 +109,7 @@
   }
   function start(mode) {
     leaveOnline();
+    pickDifficulty = false;
     hotseat = mode === 'hotseat';
     board = Array.from({length:10}, function () { return Array(9).fill(null); });
     var slots = [], identities;
@@ -142,10 +152,148 @@
     lastMove={from:from,to:to,captured:q?{type:q.type,color:q.color}:null}; selected=null;targets=[];
     notice=q ? '吃掉 '+(q.color==='red'?'红':'黑')+' '+descriptionNames[q.color][q.type] : '落子翻明 · '+(p.color==='red'?'红':'黑')+' '+descriptionNames[p.color][p.type];
     if(q && q.type==='king'){winner=opposite(q.color);phase=winner==='red'?'won':'lost';resultEffect={shown:false,started:0,particles:[]};}
-    else {turn=opposite(side); if(!candidates(turn).length) notice=(turn==='red'?'红方':'黑方')+'无棋可走，请重新开始'; else if(turn==='black'&&!hotseat) aiAt=performance.now()+450;}
+    else {turn=opposite(side); if(!candidates(turn).length) notice=(turn==='red'?'红方':'黑方')+'无棋可走，请重新开始'; else if(turn==='black'&&!hotseat) aiAt=performance.now()+aiDelay();}
     return true;
   }
-  function ai() { if(phase!=='playing'||turn!=='black')return; var list=candidates('black'); if(list.length){var m=list[randomInt(list.length)];play(m.from,m.to);} else aiAt=0; }
+  // ---- 人机难度引擎 -------------------------------------------------------
+  // 只用公开信息：隐藏棋一律按「未知」处理，不读取任何暗子身份。
+  function simClone(b) {
+    return b.map(function (row) {
+      return row.map(function (p) { return !p ? null : p.hidden ? {hidden:true, slotType:p.slotType} : {hidden:false, color:p.color, type:p.type}; });
+    });
+  }
+  function allMoves(b, side) {
+    var list = [];
+    for (var y=0; y<10; y++) for (var x=0; x<9; x++) {
+      var ms = legal(b, x, y, side);
+      for (var i=0; i<ms.length; i++) list.push({from:{x:x,y:y}, to:ms[i]});
+    }
+    return list;
+  }
+  // 落子后：明棋保持明面；暗棋在推演里仍视为未知（AI 无从预知翻出什么）。
+  function simApply(b, from, to) {
+    var p = b[from.y][from.x], q = b[to.y][to.x];
+    b[from.y][from.x] = null;
+    b[to.y][to.x] = p.hidden ? {hidden:true, slotType:p.slotType} : {hidden:false, color:p.color, type:p.type};
+    return {captured:q, kingTaken: !!(q && !q.hidden && q.type==='king')};
+  }
+  function evalBoard(b, side) {
+    var score = 0;
+    for (var y=0; y<10; y++) for (var x=0; x<9; x++) {
+      var p = b[y][x];
+      if (!p || p.hidden) continue;
+      var v = PIECE_VALUE[p.type] || 1;
+      score += p.color === side ? v : -v;
+    }
+    return score;
+  }
+  // 剩余暗子数：总数 32 减去已翻明、已被吃，全部是公开信息。
+  function hiddenPool() {
+    var revealedRed = 0, revealedBlack = 0, hidden = 0;
+    for (var y=0; y<10; y++) for (var x=0; x<9; x++) {
+      var p = board[y][x];
+      if (!p) continue;
+      if (p.hidden) hidden++;
+      else if (p.color === 'red') revealedRed++;
+      else revealedBlack++;
+    }
+    var takenRed = 0, takenBlack = 0;
+    captures.forEach(function (c) { if (c.color === 'red') takenRed++; else takenBlack++; });
+    return {total:hidden, red:Math.max(0, 16 - revealedRed - takenRed), black:Math.max(0, 16 - revealedBlack - takenBlack)};
+  }
+  // 吃暗子有风险：可能吃掉的正是己方子，甚至是己方将帅。
+  function hiddenCaptureCost(pool, side) {
+    if (pool.total <= 0) return 0;
+    var own = side === 'red' ? pool.red : pool.black;
+    var ownKingHidden = !board.some(function (row) { return row.some(function (p) { return p && !p.hidden && p.color === side && p.type === 'king'; }); });
+    var pOwn = own / pool.total;
+    var pOwnKing = ownKingHidden ? 1 / pool.total : 0;
+    return -(pOwn * 3.5 * 0.35) - pOwnKing * 80;
+  }
+  function moveScore(b, m, side, pool) {
+    var q = b[m.to.y][m.to.x], p = b[m.from.y][m.from.x];
+    if (!q) return 0;
+    if (q.hidden) return hiddenCaptureCost(pool, side);
+    return (PIECE_VALUE[q.type] || 1) * (p.hidden ? 0.5 : 1);
+  }
+  function orderedMoves(b, side, pool) {
+    var list = allMoves(b, side);
+    list.forEach(function (m) { m.rank = moveScore(b, m, side, pool); });
+    list.sort(function (a, c) { return c.rank - a.rank; });
+    return list;
+  }
+  var searchNodes = 0, searchLimit = 0, searchDeadline = 0, searchAborted = false;
+  function search(b, side, depth, alpha, beta, rootSide, pool) {
+    if (searchAborted) return evalBoard(b, rootSide);
+    if ((searchNodes++ & 255) === 0 && searchDeadline && performance.now() > searchDeadline) { searchAborted = true; return evalBoard(b, rootSide); }
+    if (searchNodes > searchLimit) { searchAborted = true; return evalBoard(b, rootSide); }
+    if (depth === 0) return evalBoard(b, rootSide);
+    var moves = orderedMoves(b, side, pool);
+    if (!moves.length) return evalBoard(b, rootSide);
+    var maximizing = side === rootSide, best = maximizing ? -Infinity : Infinity;
+    for (var i=0; i<moves.length; i++) {
+      var nb = simClone(b), res = simApply(nb, moves[i].from, moves[i].to), value;
+      if (res.kingTaken) value = maximizing ? MATE - (10 - depth) : -MATE + (10 - depth);
+      else value = search(nb, opposite(side), depth - 1, alpha, beta, rootSide, pool);
+      if (maximizing) { if (value > best) best = value; if (best > alpha) alpha = best; }
+      else { if (value < best) best = value; if (best < beta) beta = best; }
+      if (beta <= alpha) break;
+      if (searchNodes > searchLimit) break;
+    }
+    return best;
+  }
+  // 单层搜索：返回该层最好的走法；搜索被时间/节点预算打断时返回 null。
+  function searchRoot(b, side, depth, pool) {
+    var moves = orderedMoves(b, side, pool);
+    if (!moves.length) return null;
+    var best = -Infinity, picks = [];
+    for (var i=0; i<moves.length; i++) {
+      var nb = simClone(b), res = simApply(nb, moves[i].from, moves[i].to), value;
+      if (res.kingTaken) value = MATE;
+      else value = search(nb, opposite(side), depth - 1, -Infinity, Infinity, side, pool);
+      if (searchAborted) return null;
+      // 同分时轻微偏好向前推进，避免原地打转。
+      value += (moves[i].to.y - moves[i].from.y) * (side === 'black' ? 0.01 : -0.01);
+      if (value > best + 1e-9) { best = value; picks = [moves[i]]; }
+      else if (Math.abs(value - best) <= 1e-9) picks.push(moves[i]);
+    }
+    return picks[randomInt(picks.length)];
+  }
+  // 迭代加深：逐层加深，只保留完整跑完的那一层结果，时间到就收手。
+  function chooseMove(side, depth, budgetMs) {
+    var b = publicBoard(), pool = hiddenPool();
+    var moves = orderedMoves(b, side, pool);
+    if (!moves.length) return null;
+    if (depth <= 0) return moves[randomInt(moves.length)];
+    searchNodes = 0; searchLimit = 200000;
+    searchDeadline = performance.now() + (budgetMs || 400); searchAborted = false;
+    var bestMove = null;
+    for (var d = 1; d <= depth; d++) {
+      var candidate = searchRoot(b, side, d, pool);
+      if (!candidate || searchAborted) break;
+      bestMove = candidate;
+      if (performance.now() > searchDeadline) break;
+    }
+    return bestMove || moves[randomInt(moves.length)];
+  }
+  function aiDelay() { return DIFFICULTY === 'hard' ? 520 : DIFFICULTY === 'medium' ? 450 : 380; }
+  function ai() {
+    if (phase !== 'playing' || turn !== 'black') return;
+    var move = null;
+    if (DIFFICULTY === 'easy') {
+      var list = candidates('black');
+      move = list.length ? list[randomInt(list.length)] : null;
+    } else if (DIFFICULTY === 'medium') {
+      // 两层：走完之后再看对手的回应，避免白送子。
+      move = chooseMove('black', 2, 120);
+      if (!move) { var l2 = candidates('black'); move = l2.length ? l2[randomInt(l2.length)] : null; }
+    } else {
+      // 困难：迭代加深到四层，单步最多 450ms，保证不会卡住。
+      move = chooseMove('black', 4, 450);
+      if (!move) { var l3 = candidates('black'); move = l3.length ? l3[randomInt(l3.length)] : null; }
+    }
+    if (move) play(move.from, move.to); else aiAt = 0;
+  }
   function clickBoard(x,y) {
     if(phase!=='playing'||(!hotseat&&turn!=='red'))return;
     if(selected && targets.some(function(t){return t.x===x&&t.y===y;})){play(selected,{x:x,y:y});return;}
@@ -177,6 +325,20 @@
     ctx.beginPath();ctx.arc(x,y,radius-3,0,Math.PI*2);ctx.lineWidth=1.5;ctx.strokeStyle=p.hidden?'#d0ad7a':p.color==='red'?'#a7352b':'#40382e';ctx.stroke();
     ctx.beginPath();ctx.arc(x,y,radius-6,0,Math.PI*2);ctx.lineWidth=.6;ctx.stroke();
     text(p.hidden?'隱':names[p.color][p.type],x,y+1,p.hidden?21:27,p.hidden?'#e7cba0':p.color==='red'?'#a12e25':'#302b28','center');
+  }
+  // 点「人机对弈」后先选难度；一局结束后也能从这里换。
+  function drawDifficultyPicker(){
+    ctx.fillStyle='rgba(25,17,12,.72)';ctx.fillRect(0,0,W,H);
+    ctx.save();ctx.shadowColor='rgba(0,0,0,.45)';ctx.shadowBlur=26;rect(70,286,560,506,18,'#f1dfbb','#d5ac72');ctx.restore();
+    text('选择人机难度',350,344,28,accent(),'center');
+    text('简单随手走 · 中等抢子力 · 困难算三步',350,386,15,'#7d6a55','center');
+    DIFF_ORDER.forEach(function(d,i){
+      var y=414+i*92, on=DIFFICULTY===d;
+      rect(140,y,420,72,8,on?'#963d2e':'#e7d3b2',on?'#c8a274':'#c9ad85');
+      text(DIFF_LABELS[d],216,y+36,24,on?'#f7e5c2':'#5e4c3c','center');
+      text(d==='easy'?'随机走子，适合上手':d==='medium'?'会抢吃子力，偶有失误':'三步搜索，会护子设套',372,y+36,15,on?'#efdcc0':'#8c7962','center');
+    });
+    button(200,700,300,64,'取消',false);
   }
   function drawExitConfirm(){
     ctx.fillStyle='rgba(25,17,12,.62)';ctx.fillRect(0,0,W,H);
@@ -223,7 +385,7 @@
     if(online&&online.status==='finished'){
       button(190,600,320,74,rematchAsked()?'等待对方同意…':'再来一局',!rematchAsked());
       text('点击其他地方查看棋盘',350,700,16,win?'#9b8060':'#a7abb1','center');
-    } else text('点击画面继续',350,675,18,win?'#9b8060':'#a7abb1','center');
+    } else text(hotseat?'点击画面继续':'下方可重新开始或换难度',350,675,17,win?'#9b8060':'#a7abb1','center');
   }
   function draw(){
     // Paint the whole backing store first so the letterboxed side areas on wide
@@ -246,9 +408,10 @@
       if(selected){ctx.strokeStyle='#527b53';ctx.lineWidth=3;ctx.beginPath();ctx.arc(px(selected.x),py(selected.y),35,0,Math.PI*2);ctx.stroke();}}
     rect(14,806,672,380,12,'#eee0c4',online?accent():'#b89970');
     text(online?'房间 '+online.room+' · 你执'+(online.side==='red'?'红':'黑'):phase==='title'?'选择对弈':phase==='won'?'红方胜':phase==='lost'?'黑方胜':hotseat?(turn==='red'?'红方行棋':'黑方行棋'):turn==='red'?'红方行棋':'黑方思考中',38,844,online?20:25,accent());
-    text(notice||(phase==='title'?(netAvailable?'人机练习、同屏双人或房间对战':'人机练习或同屏双人'):hotseat?'同屏双人 · 轮流行棋':'选择暗棋或己方明棋'),38,880,16,'#6b5947');
+    text(notice||(phase==='title'?(netAvailable?'人机练习、同屏双人或房间对战':'人机练习或同屏双人'):hotseat?'同屏双人 · 轮流行棋':(online?'选择暗棋或己方明棋':'难度：'+DIFF_LABELS[DIFFICULTY]+' · 选择暗棋或己方明棋')),38,880,16,'#6b5947');
     if(online&&online.status==='finished'){button(340,823,150,70,'退出房间',false);button(500,823,162,70,rematchAsked()?'等待中…':'再来一局',!rematchAsked());}
-    else button(450,823,210,70,online?'退出房间':phase==='title'?'人机对弈':'重新开始',true);
+    else if(!online&&!hotseat&&(phase==='won'||phase==='lost')){button(340,823,150,70,'选择难度',false);button(500,823,162,70,'重新开始',true);}
+    else if(online||phase!=='title') button(450,823,210,70,online?'退出房间':'重新开始',true);
     ctx.strokeStyle='#c9ad85';line(38,909,662,909);
     text('吃子记录',38,936,20,'#5e4c3c');text(online?'仅记录当前会话观察到的吃子':'最新在左上，按编号倒序',662,936,14,'#8c7962','right');
     if(!captures.length) text('尚无吃子',38,980,16,'#a38d73');
@@ -281,23 +444,42 @@
     }
     if(captureFocus) drawCaptureFocus(performance.now());
     else if(resultEffect&&resultEffect.shown) drawResult(performance.now());
+    if(pickDifficulty) drawDifficultyPicker();
     if(confirmExit) drawExitConfirm();
   }
-  function pointer(e){e.preventDefault();enableAudio();if(confirmExit){var rc=canvas.getBoundingClientRect(),cx=(e.clientX-rc.left-ox)/scale,cy=(e.clientY-rc.top-oy)/scale;if(cy>=600&&cy<=676&&cx>=110&&cx<=350){confirmExit=false;return;}if(cy>=600&&cy<=676&&cx>=350&&cx<=590){leaveRoom();return;}if(cy<430||cy>730){confirmExit=false;}return;}if(captureFocus){if(performance.now()-captureFocus.started>400)captureFocus=null;return;}var r=canvas.getBoundingClientRect(),x=(e.clientX-r.left-ox)/scale,y=(e.clientY-r.top-oy)/scale;
+  function pointer(e){e.preventDefault();enableAudio();
+    if(pickDifficulty){
+      var pr=canvas.getBoundingClientRect(),ppx=(e.clientX-pr.left-ox)/scale,ppy=(e.clientY-pr.top-oy)/scale;
+      for(var pi=0;pi<DIFF_ORDER.length;pi++){
+        var py0=414+pi*92;
+        if(ppx>=140&&ppx<=560&&ppy>=py0&&ppy<=py0+72){setDifficulty(DIFF_ORDER[pi]);pickDifficulty=false;start();return;}
+      }
+      if(ppx>=200&&ppx<=500&&ppy>=700&&ppy<=764){pickDifficulty=false;return;}
+      return;
+    }
+    if(confirmExit){var rc=canvas.getBoundingClientRect(),cx=(e.clientX-rc.left-ox)/scale,cy=(e.clientY-rc.top-oy)/scale;if(cy>=600&&cy<=676&&cx>=110&&cx<=350){confirmExit=false;return;}if(cy>=600&&cy<=676&&cx>=350&&cx<=590){leaveRoom();return;}if(cy<430||cy>730){confirmExit=false;}return;}if(captureFocus){if(performance.now()-captureFocus.started>400)captureFocus=null;return;}var r=canvas.getBoundingClientRect(),x=(e.clientX-r.left-ox)/scale,y=(e.clientY-r.top-oy)/scale;
     if(resultEffect&&resultEffect.shown){
       if(online&&online.status==='finished'){
         if(x>=190&&x<=510&&y>=600&&y<=674){requestRematch();return;}
         if(y>=823&&y<=893&&x>=340&&x<=490){resultEffect=null;confirmExit=true;return;}
         if(y>=823&&y<=893&&x>=500&&x<=662){requestRematch();return;}
       }
+      // 单机局末：结算层挡着时也要能直接点底部两个按钮，否则要连点两次。
+      if(!online&&!hotseat&&(phase==='won'||phase==='lost')&&y>=823&&y<=893){
+        if(x>=340&&x<=490){resultEffect=null;pickDifficulty=true;return;}
+        if(x>=500&&x<=662){resultEffect=null;start();return;}
+      }
       resultEffect=null;return;
     }if(y>=1075&&y<=1149&&x>=38&&x<=336){musicOn=!musicOn;if(musicGain)musicGain.gain.setTargetAtTime(musicOn?MUSIC_VOLUME:0,audio.currentTime,.04);nextNote=0;return;}if(y>=1075&&y<=1149&&x>=364&&x<=662){effectsOn=!effectsOn;if(effectsGain)effectsGain.gain.setTargetAtTime(effectsOn?EFFECTS_VOLUME:0,audio.currentTime,.01);return;}if(y>=823&&y<=893){
       if(online&&online.status==='finished'){
         if(x>=340&&x<=490){confirmExit=true;return;}
         if(x>=500&&x<=662){requestRematch();return;}
-      } else if(x>=450&&x<=660){if(online){confirmExit=true;}else start();return;}
+      } else if(!online&&!hotseat&&(phase==='won'||phase==='lost')){
+        if(x>=340&&x<=490){pickDifficulty=true;return;}
+        if(x>=500&&x<=662){start();return;}
+      } else if(x>=450&&x<=660&&(online||phase!=='title')){if(online){confirmExit=true;}else start();return;}
     }if(phase==='title'){
-      if(y>=430&&y<=504){if(x>=70&&x<=330){start();return;}if(x>=370&&x<=630){start('hotseat');return;}}
+      if(y>=430&&y<=504){if(x>=70&&x<=330){pickDifficulty=true;return;}if(x>=370&&x<=630){start('hotseat');return;}}
       if(netAvailable&&y>=528&&y<=602){if(x>=70&&x<=330){openRoom(false);return;}if(x>=370&&x<=630){openRoom(true);return;}}
       if(x>=30&&x<=670&&y>=62&&y<=776){start();return;}
       return;
@@ -305,7 +487,13 @@
   canvas.addEventListener('pointerdown',pointer);window.addEventListener('keydown',function(e){if(e.key==='Enter'&&(phase==='title'||phase==='won'||phase==='lost')){e.preventDefault();enableAudio();start();}});window.addEventListener('resize',resize);window.addEventListener('orientationchange',resize);
   if(window.visualViewport){window.visualViewport.addEventListener('resize',resize);window.visualViewport.addEventListener('scroll',resize);}
   window.addEventListener('pageshow',resize);
-  window.__gameState=function(){return {phase:phase,score:0,hearts:1,fps:fps,hero:{x:0,y:0},pickups:[],enemies:[],world:{w:W,h:H},turn:turn||null,winner:winner||null,room:online?online.room:null,side:online?online.side:null,notice:notice,confirmExit:confirmExit,rematch:online?(online.rematch||[]):[],round:online?(online.round||1):1,hotseat:hotseat,net:netAvailable};};
+  // 测试钩子：仅供自动化验证难度强度，不影响对局。
+  window.__aiProbe=function(side,depth){
+    var t0=performance.now(), mv=chooseMove(side||'black', depth===undefined?3:depth);
+    return {move:mv, nodes:searchNodes, limit:searchLimit, ms:Math.round(performance.now()-t0)};
+  };
+  window.__aiTest={start:function(mode){start(mode);},setDifficulty:setDifficulty,chooseMove:chooseMove,play:function(f,t){return play(f,t);}};
+  window.__gameState=function(){return {phase:phase,score:0,hearts:1,fps:fps,hero:{x:0,y:0},pickups:[],enemies:[],world:{w:W,h:H},turn:turn||null,winner:winner||null,room:online?online.room:null,side:online?online.side:null,notice:notice,confirmExit:confirmExit,rematch:online?(online.rematch||[]):[],round:online?(online.round||1):1,hotseat:hotseat,net:netAvailable,difficulty:DIFFICULTY,pickDifficulty:pickDifficulty};};
   window.__autoplay=function(){if(online||hotseat||captureFocus||phase!=='playing'||turn!=='red')return;var list=candidates('red');if(list.length){var m=list[randomInt(list.length)];play(m.from,m.to);}};
   function frame(t){if(prev){var dt=t-prev;if(dt>0)fps=fps*.9+1000/dt*.1;}prev=t;if(captureFocus&&t-captureFocus.started>=captureFocus.duration)captureFocus=null;if(!captureFocus&&resultEffect&&!resultEffect.shown)beginResult(t);if(resultEffect&&resultEffect.shown&&t-resultEffect.started>5000&&!(online&&online.status==='finished'))resultEffect=null;if(!captureFocus&&aiAt&&t>=aiAt){aiAt=0;ai();}if(!resultEffect)music();draw();requestAnimationFrame(frame);}
   resize();requestAnimationFrame(frame);
