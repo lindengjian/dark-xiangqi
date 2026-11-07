@@ -24,7 +24,54 @@
 
 GitHub Pages 只能托管静态文件，跑不了 Node 服务，所以**在线版没有房间对战**。需要联网对战时在本地启动服务（见下）。
 
-## 本地运行
+## Docker 部署（推荐）
+
+镜像里已经包含页面和房间 API，跑起来就能对战，不需要额外挂文件或装依赖。
+
+```bash
+git clone https://github.com/lindengjian/dark-xiangqi.git
+cd dark-xiangqi
+
+docker build -t dark-xiangqi .
+docker run -d --name xiangqi -p 3218:3218 \
+  -e ALLOWED_HOSTS=xiangqi.example.com \
+  -e TRUST_PROXY=1 \
+  --restart unless-stopped \
+  dark-xiangqi
+```
+
+打开 `http://服务器IP:3218/` 即可建房对战。用 compose 更省事：
+
+```bash
+ALLOWED_HOSTS=xiangqi.example.com TRUST_PROXY=1 docker compose up -d
+```
+
+两个环境变量决定谁能访问：
+
+| 变量 | 作用 |
+| --- | --- |
+| `ALLOWED_HOSTS` | 允许的域名，逗号分隔，不带 `https://` 和端口。留空则只允许 localhost 与局域网 IP |
+| `TRUST_PROXY` | 前面有 Caddy/nginx/Traefik 终结 TLS 时设为 `1`，否则 https 页面调 API 会被 Origin 校验拒绝 |
+| `TRUST_ANY_HOST` | 设为 `1` 时接受任意 Host，仅适合纯内网或已由前置代理严格限制的场景 |
+
+容器自带 `/healthz` 探针，不依赖公网 Host 头，可直接接 Kubernetes 或 compose 的 healthcheck。
+
+### 公网部署要点
+
+- **必须放在 HTTPS 反向代理后面**。浏览器从 https 页面调 http 接口会被混合内容策略拦掉。
+- 反向代理要透传 `Host` 和 `X-Forwarded-Proto`，Caddy 默认就会带。
+- 房间存在进程内存里，**重启容器即清空**；多副本之间不共享房间，需要多副本时得先把房间状态挪到 Redis。
+- 单容器足够个人和小范围使用，但它是无认证的公开服务，别长期暴露给不可信网络。
+
+### Caddy 示例
+
+```
+xiangqi.example.com {
+    reverse_proxy 127.0.0.1:3218
+}
+```
+
+## 本地运行（不用 Docker）
 
 需要 Node.js 18+，无第三方依赖。
 
@@ -60,11 +107,13 @@ npm test
 ```
 index.html          静态版（GitHub Pages 用）：人机 + 同屏双人，无网络请求
 online.html         服务版页面：CSP 由 server/online.js 按请求改写
+Dockerfile          镜像：node:22-alpine + 上面这些文件，非 root 运行
+docker-compose.yml  一条命令起服务
 server/
   game.js           权威规则：洗牌、走法枚举、落子、AI
   game.test.js      规则测试
   server.js         房间 API：create / join / move / state / moves / rematch
-  online.js         同源包装：服务页面 + 房间 API，按请求改写 CSP
+  online.js         同源包装：服务页面 + 房间 API + /healthz
 ```
 
 ## 房间 API

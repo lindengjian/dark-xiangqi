@@ -1,0 +1,19 @@
+services:
+  xiangqi:
+    build: .
+    image: dark-xiangqi:latest
+    container_name: dark-xiangqi
+    restart: unless-stopped
+    ports:
+      - "3218:3218"
+    environment:
+      # 对外访问的域名，多个用逗号分隔，不带 https:// 和端口。
+      # 留空则只允许 localhost 与局域网地址访问。
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
+      # 由 Caddy / nginx 终结 TLS 时设为 1，否则 https 页面调 API 会被 Origin 校验拒绝。
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3218/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

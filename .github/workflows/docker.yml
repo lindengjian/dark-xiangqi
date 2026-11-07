@@ -1,0 +1,39 @@
+name: docker
+
+# 每次推到 master 都构建一次镜像，确认 Dockerfile 没被改坏。
+# 不在 CI 里推送镜像：要发布到 Docker Hub 时再加登录步骤。
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: dark-xiangqi:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test the container
+        run: |
+          docker run -d --name ci -p 3218:3218 dark-xiangqi:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3218/healthz >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3218/healthz
+          curl -fsS -o /dev/null -w 'page=%{http_code}\n' http://127.0.0.1:3218/
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d '{"mode":"room"}' http://127.0.0.1:3218/api/create | head -c 120; echo
+          docker logs ci
+      - name: Unit tests
+        run: docker run --rm --entrypoint node dark-xiangqi:ci --test server/game.test.js
