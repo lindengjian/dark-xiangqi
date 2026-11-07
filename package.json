@@ -1,0 +1,13 @@
+{
+  "name": "dark-xiangqi",
+  "version": "1.0.0",
+  "private": true,
+  "description": "暗棋（翻棋）象棋 —— 单机人机、同屏双人与局域网房间对战",
+  "scripts": {
+    "start": "node server/online.js",
+    "serve": "node server/online.js",
+    "test": "node --test server/game.test.js"
+  },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}

@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; media-src data: blob:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'">
+<title>暗棋象棋</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#000}canvas{display:block;width:100vw;height:100vh;touch-action:none;outline:none}</style></head><body><canvas id="game" tabindex="0"></canvas>
+<script>window.DARK_XIANGQI_STATIC=true;</script>
+<script>window.GAME={"title":"暗棋象棋","rules":{"duration":60,"hearts":3,"heroSpeed":320,"enemySpeed":120,"enemySpeedGrowth":3,"enemySpawnEvery":4,"maxEnemies":8,"maxPickups":5,"heroSize":76,"enemySize":68,"pickupSize":44,"shield":{"enabled":false,"every":3,"seconds":4}},"slots":{"hero":{"tile":false,"custom":true}},"assets":{"hero":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNTYgMjU2IiB3aWR0aD0iMjU2IiBoZWlnaHQ9IjI1NiI+PGNpcmNsZSBjeD0iMTI4IiBjeT0iMTMyIiByPSIxMDEiIGZpbGw9IiM0ZDMwMjEiLz48Y2lyY2xlIGN4PSIxMjgiIGN5PSIxMjQiIHI9IjEwMSIgZmlsbD0iI2FmNzk1MCIgc3Ryb2tlPSIjNGQzMDIxIiBzdHJva2Utd2lkdGg9IjgiLz48Y2lyY2xlIGN4PSIxMjgiIGN5PSIxMjQiIHI9IjgzIiBmaWxsPSIjNzY1MDM4IiBzdHJva2U9IiNkZGI3N2MiIHN0cm9rZS13aWR0aD0iNCIvPjxjaXJjbGUgY3g9IjEyOCIgY3k9IjEyNCIgcj0iNzMiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2Q3YWY3NyIgc3Ryb2tlLXdpZHRoPSIyIi8+PHRleHQgeD0iMTI4IiB5PSIxNTUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJzZXJpZiIgZm9udC1zaXplPSI4OCIgZmlsbD0iI2YxZDRhMiI+6ZqQPC90ZXh0Pjwvc3ZnPg=="}};</script>
+<script>/* 暗棋象棋 — independent local practice, based on dark-xiangqi/game.js. */
+(function () {
+  'use strict';
+  var canvas = document.getElementById('game');
+  if (!canvas) { canvas = document.createElement('canvas'); canvas.id = 'game'; document.body.appendChild(canvas); }
+  canvas.style.cssText += ';display:block;width:100vw;height:100vh;height:100dvh;touch-action:none;outline:none;background:#211a16';
+  canvas.tabIndex = 0;
+  var ctx = canvas.getContext('2d'), W = 700, H = 1200, scale = 1, ox = 0, oy = 0;
+  var BACK = ['rook','horse','elephant','advisor','king','advisor','elephant','horse','rook'];
+  var names = {red:{rook:'俥',horse:'傌',elephant:'相',advisor:'仕',king:'帥',cannon:'炮',pawn:'兵'},black:{rook:'車',horse:'馬',elephant:'象',advisor:'士',king:'將',cannon:'砲',pawn:'卒'}};
+  var descriptionNames = {red:{rook:'车',horse:'马',elephant:'相',advisor:'仕',king:'帅',cannon:'炮',pawn:'兵'},black:{rook:'车',horse:'马',elephant:'象',advisor:'士',king:'将',cannon:'炮',pawn:'卒'}};
+  var board, turn, winner, phase = 'title', selected = null, targets = [], lastMove = null, notice = '', captures = [], captureFocus = null, aiAt = 0, fps = 60, prev = 0;
+  // The GitHub Pages build has no room API, so it hides the online buttons and
+  // offers 同屏双人 (both players on one device) instead.
+  var netAvailable = !window.DARK_XIANGQI_STATIC;
+  var hotseat = false;
+  var blurBuffer = document.createElement('canvas'), blurContext = blurBuffer.getContext('2d');
+  var resultEffect=null;
+  var online=null, onlineEpoch=0, onlineBusy=false, onlineSelecting=0, pollTimer=null, confirmExit=false, rematchBusy=false;
+  function leaveOnline(){onlineEpoch++;online=null;onlineBusy=false;onlineSelecting++;confirmExit=false;flipped=false;rematchBusy=false;if(pollTimer)clearTimeout(pollTimer);pollTimer=null;}
+  function leaveRoom(){leaveOnline();phase='title';board=null;notice='已退出房间';captures=[];selected=null;targets=[];}
+  function api(path,options){return fetch(path,options).then(function(r){return r.json().catch(function(){throw new Error('服务响应无效');}).then(function(data){if(!r.ok)throw new Error(data.error||'请求失败');return data;});});}
+  function post(path,data){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),cache:'no-store'});}
+  function query(path,extra){var p=new URLSearchParams({room:online.room,token:online.token});if(extra)Object.keys(extra).forEach(function(k){p.set(k,extra[k]);});return api(path+'?'+p.toString(),{cache:'no-store'});}
+  function onlineError(e){var msg=e&&e.message||'';return /Room not found/i.test(msg)?'房间不存在或已失效':/Room is full/i.test(msg)?'房间已满':/Illegal move/i.test(msg)?'走法无效，正在同步':/Invalid token/i.test(msg)?'房间身份已失效':'网络不可用：请通过同源服务器页面打开；Studio 预览禁止联网';}
+  function applyState(s,initial,meta){
+    if(!online||!s||!Array.isArray(s.board))return;
+    if(meta&&Array.isArray(meta.rematch))online.rematch=meta.rematch;
+    if(meta&&typeof meta.round==='number')online.round=meta.round;
+    var newRound=!!online.finished&&s.status==='playing';
+    if(newRound){online.finished=false;captures=[];captureFocus=null;resultEffect=null;online.rematch=[];selected=null;targets=[];onlineSelecting++;}
+    var oldBoard=board, oldSignature=online.signature, signature=JSON.stringify([s.board,s.turn,s.status,s.lastMove]);
+    if(!initial&&oldSignature!==signature&&s.lastMove&&oldBoard){
+      var m=s.lastMove, victim=oldBoard[m.to.y]&&oldBoard[m.to.y][m.to.x], attacker=s.board[m.to.y]&&s.board[m.to.y][m.to.x], cap=m.captured, actor=turn;
+      soundMove(!!cap);
+      if(cap&&attacker){captures.push({actor:actor,color:cap.color,type:cap.type,wasHidden:!!(victim&&victim.hidden)});captureFocus={actor:actor,attacker:attacker,victim:cap,wasHidden:!!(victim&&victim.hidden),started:performance.now(),duration:2400};}
+      selected=null;targets=[];onlineSelecting++;
+    }
+    board=s.board;turn=s.turn;winner=s.winner;lastMove=s.lastMove;online.signature=signature;online.status=s.status;syncFlip();
+    phase=s.status==='finished'?(winner===online.side?'won':'lost'):'playing';
+    if(s.status==='finished'&&!online.finished){online.finished=true;resultEffect={shown:false,started:0,particles:[]};}
+    notice=newRound?'第 '+(online.round||1)+' 局开始':s.status==='waiting'?'等待另一位玩家加入':s.status==='finished'?(rematchAsked()?'已请求再来一局，等待对方同意':opponentAsked()?'对方想再来一局，点「再来一局」开始':'对局结束 · 可再来一局'):turn===online.side?'轮到你行棋':'等待对方行棋';
+  }
+  function poll(epoch){if(!online||epoch!==onlineEpoch)return;if(onlineBusy){pollTimer=setTimeout(function(){poll(epoch);},700);return;}onlineBusy=true;query('/api/state').then(function(data){if(epoch===onlineEpoch)applyState(data.state,false,data);}).catch(function(e){if(epoch===onlineEpoch)notice=onlineError(e);}).finally(function(){if(epoch!==onlineEpoch)return;onlineBusy=false;pollTimer=setTimeout(function(){poll(epoch);},1000);});}
+  function openRoom(join){
+    if(onlineBusy)return;var code=join?window.prompt('请输入六位房间号') : null;if(join&&code===null)return;if(join&&!/^[A-Za-z2-9]{6}$/.test(code.trim())){notice='请输入有效的六位房间号';return;}
+    leaveOnline();var epoch=onlineEpoch;onlineBusy=true;notice='正在连接房间…';
+    post(join?'/api/join':'/api/create',join?{room:code.trim().toUpperCase()}:{mode:'room'}).then(function(data){if(epoch!==onlineEpoch)return;online={room:data.room,token:data.token,side:data.side,status:data.state.status,signature:null,finished:false,rematch:[],round:data.round||1};rematchBusy=false;captures=[];captureFocus=null;resultEffect=null;aiAt=0;selected=null;targets=[];applyState(data.state,true,data);}).catch(function(e){if(epoch===onlineEpoch)notice=onlineError(e);}).finally(function(){if(epoch!==onlineEpoch)return;onlineBusy=false;if(online)poll(epoch);});
+  }
+  function clickOnline(x,y){
+    if(!online||onlineBusy||online.status!=='playing'||turn!==online.side)return;
+    var epoch=onlineEpoch;
+    if(selected&&targets.some(function(t){return t.x===x&&t.y===y;})){var from=selected;selected=null;targets=[];onlineSelecting++;onlineBusy=true;post('/api/move',{room:online.room,token:online.token,from:from,to:{x:x,y:y}}).then(function(data){if(epoch===onlineEpoch)applyState(data.state,false,data);}).catch(function(e){if(epoch===onlineEpoch)notice=onlineError(e);}).finally(function(){if(epoch===onlineEpoch)onlineBusy=false;});return;}
+    selected=null;targets=[];var p=board[y][x];if(!p)return;var seq=++onlineSelecting;query('/api/moves',{x:x,y:y}).then(function(data){if(epoch!==onlineEpoch||seq!==onlineSelecting||!online||turn!==online.side)return;selected={x:x,y:y};targets=data.moves;}).catch(function(e){if(epoch===onlineEpoch)notice=onlineError(e);});
+  }
+  function rematchAsked(){return !!(online&&online.rematch&&online.rematch.indexOf(online.side)>=0);}
+  function opponentAsked(){return !!(online&&online.rematch&&online.rematch.some(function(s){return s!==online.side;}));}
+  function requestRematch(){
+    if(!online||rematchBusy||online.status!=='finished'||rematchAsked())return;
+    var epoch=onlineEpoch;rematchBusy=true;
+    post('/api/rematch',{room:online.room,token:online.token}).then(function(data){if(epoch===onlineEpoch)applyState(data.state,false,data);}).catch(function(e){if(epoch===onlineEpoch)notice=onlineError(e);}).finally(function(){if(epoch===onlineEpoch)rematchBusy=false;});
+  }
+  var bx = 62, by = 100, step = 72, radius = 30;
+  var audio=null, musicGain=null, effectsGain=null, musicOn=true, effectsOn=true, nextNote=0, noteIndex=0;
+  // Master bus levels; the per-note amplitudes stay quiet so a 2x bus keeps headroom.
+  var MUSIC_VOLUME=2, EFFECTS_VOLUME=2;
+  // A slow pentatonic melody with overlapping notes and a sustained chord each bar.
+  var melody=[293.66,329.63,392,440,392,329.63,293.66,261.63, 293.66,329.63,392,523.25,440,392,329.63,293.66, 261.63,293.66,329.63,392,329.63,293.66,261.63,220, 261.63,293.66,329.63,392,329.63,293.66,261.63,293.66];
+  var chords=[[146.83,220,293.66],[130.81,196,261.63],[110,164.81,220],[130.81,196,261.63]];
+  function enableAudio(){
+    try { var AudioEngine=window.AudioContext||window.webkitAudioContext;if(!audio&&AudioEngine){audio=new AudioEngine();musicGain=audio.createGain();effectsGain=audio.createGain();musicGain.gain.value=musicOn?MUSIC_VOLUME:0;effectsGain.gain.value=effectsOn?EFFECTS_VOLUME:0;musicGain.connect(audio.destination);effectsGain.connect(audio.destination);}if(audio&&audio.state==='suspended')audio.resume().catch(function(){}); }
+    catch(e){audio=null;}
+  }
+  function tone(freq,at,length,volume,kind,bus,attack){
+    if(!audio||audio.state!=='running')return;
+    var osc=audio.createOscillator(),gain=audio.createGain();osc.type=kind||'sine';osc.frequency.setValueAtTime(freq,at);
+    gain.gain.setValueAtTime(.0001,at);gain.gain.exponentialRampToValueAtTime(volume,at+(attack||.015));gain.gain.exponentialRampToValueAtTime(.0001,at+length);
+    osc.connect(gain);gain.connect(bus||effectsGain);osc.start(at);osc.stop(at+length+.02);
+  }
+  function soundMove(capture){if(!audio||!effectsOn)return;var t=audio.currentTime;tone(capture?185:440,t,capture ? .23 : .09,capture ? .12 : .065,'triangle');if(capture){tone(110,t+.035,.32,.09,'sine');tone(660,t+.12,.24,.055,'sine');}}
+  function soundResult(win){if(!audio||!effectsOn||audio.state!=='running')return;var t=audio.currentTime,seq=win?[392,493.88,587.33,783.99]:[392,329.63,261.63,196];seq.forEach(function(n,i){tone(n,t+i*.18,win ? .55 : .7,.08,'triangle');});}
+  function music(){
+    if(!audio||!musicOn||audio.state!=='running')return;
+    var now=audio.currentTime;if(nextNote<now-.2)nextNote=now+.03;
+    while(nextNote<now+.15){var n=melody[noteIndex%melody.length];tone(n,nextNote,1.35,.022,'sine',musicGain,.18);tone(n*2,nextNote,1.1,.004,'sine',musicGain,.22);if(noteIndex%8===0){var chord=chords[Math.floor(noteIndex/8)%chords.length];chord.forEach(function(f){tone(f,nextNote,5.6,.006,'sine',musicGain,.65);});}noteIndex++;nextNote+=.64;}
+  }
+  function opposite(c) { return c === 'red' ? 'black' : 'red'; }
+  function inside(x,y) { return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && x < 9 && y >= 0 && y < 10; }
+  function randomInt(n) {
+    if (window.crypto && window.crypto.getRandomValues) { var a = new Uint32Array(1), limit = Math.floor(4294967296 / n) * n; do { window.crypto.getRandomValues(a); } while (a[0] >= limit); return a[0] % n; }
+    return Math.floor(Math.random() * n);
+  }
+  function start(mode) {
+    leaveOnline();
+    hotseat = mode === 'hotseat';
+    board = Array.from({length:10}, function () { return Array(9).fill(null); });
+    var slots = [], identities;
+    [['black',0,2,3],['red',9,7,6]].forEach(function (v) {
+      BACK.forEach(function (type,x) { slots.push({x:x,y:v[1],type:type,color:v[0]}); });
+      [1,7].forEach(function (x) { slots.push({x:x,y:v[2],type:'cannon',color:v[0]}); });
+      [0,2,4,6,8].forEach(function (x) { slots.push({x:x,y:v[3],type:'pawn',color:v[0]}); });
+    });
+    identities = slots.map(function (s) { return {type:s.type,color:s.color}; });
+    for (var i=identities.length-1;i>0;i--) { var j=randomInt(i+1), t=identities[i]; identities[i]=identities[j]; identities[j]=t; }
+    slots.forEach(function (s,i) { board[s.y][s.x] = {type:identities[i].type,color:identities[i].color,hidden:true,slotType:s.type}; });
+    turn='red'; winner=null; phase='playing'; selected=null; targets=[]; lastMove=null; notice=''; captures=[]; captureFocus=null; resultEffect=null; aiAt=0;
+  }
+  // Hidden identities are removed before move enumeration, including for the AI.
+  function publicBoard() { return board.map(function (row) { return row.map(function (p) { return !p ? null : p.hidden ? {hidden:true,slotType:p.slotType} : {hidden:false,color:p.color,type:p.type}; }); }); }
+  function legal(b,x,y,side) {
+    if (!inside(x,y)) return [];
+    var p=b[y][x]; if (!p || (!p.hidden && p.color !== side) || (p.hidden && (side==='red' ? y<5 : y>4))) return [];
+    var type=p.hidden?p.slotType:p.type, direction=(p.hidden?side:p.color)==='red'?-1:1, moves=[];
+    function add(tx,ty,cap,empty) { if (!inside(tx,ty)) return; var q=b[ty][tx]; if (q ? cap!==false && (q.hidden || q.color!==side) : empty!==false) moves.push({x:tx,y:ty}); }
+    var dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+    if(type==='rook'||type==='cannon') dirs.forEach(function(d){ var screens=0; for(var tx=x+d[0],ty=y+d[1];inside(tx,ty);tx+=d[0],ty+=d[1]) { var q=b[ty][tx]; if(type==='rook'){add(tx,ty);if(q)break;} else if(!screens){if(q)screens=1;else add(tx,ty,false,true);}else if(q){add(tx,ty,true,false);break;} } });
+    else if(type==='horse') dirs.forEach(function(d){var dx=d[0],dy=d[1];if(!inside(x+dx,y+dy)||b[y+dy][x+dx])return;if(dx){add(x+2*dx,y+1);add(x+2*dx,y-1);}else{add(x+1,y+2*dy);add(x-1,y+2*dy);}});
+    else if(type==='elephant') [-1,1].forEach(function(dx){[-1,1].forEach(function(dy){if(inside(x+dx,y+dy)&&!b[y+dy][x+dx])add(x+2*dx,y+2*dy);});});
+    else if(type==='advisor') [-1,1].forEach(function(dx){[-1,1].forEach(function(dy){add(x+dx,y+dy);});});
+    else if(type==='king') dirs.forEach(function(d){add(x+d[0],y+d[1]);});
+    else if(type==='pawn'){add(x,y+direction);if(direction===-1?y<=4:y>=5){add(x-1,y);add(x+1,y);}}
+    return moves;
+  }
+  function candidates(side) { var b=publicBoard(), list=[]; for(var y=0;y<10;y++)for(var x=0;x<9;x++) legal(b,x,y,side).forEach(function(to){list.push({from:{x:x,y:y},to:to});}); return list; }
+  function play(from,to) {
+    if(phase!=='playing'||!legal(publicBoard(),from.x,from.y,turn).some(function(m){return m.x===to.x&&m.y===to.y;})) return false;
+    var p=board[from.y][from.x], q=board[to.y][to.x], side=turn;
+    soundMove(!!q);
+    if(q) {
+      captures.push({actor:side, color:q.color, type:q.type, wasHidden:q.hidden});
+      captureFocus={actor:side, attacker:{color:p.color,type:p.type,hidden:false}, victim:{color:q.color,type:q.type,hidden:false}, wasHidden:q.hidden, started:performance.now(), duration:2400};
+    }
+    board[from.y][from.x]=null; p.hidden=false; board[to.y][to.x]=p;
+    lastMove={from:from,to:to,captured:q?{type:q.type,color:q.color}:null}; selected=null;targets=[];
+    notice=q ? '吃掉 '+(q.color==='red'?'红':'黑')+' '+descriptionNames[q.color][q.type] : '落子翻明 · '+(p.color==='red'?'红':'黑')+' '+descriptionNames[p.color][p.type];
+    if(q && q.type==='king'){winner=opposite(q.color);phase=winner==='red'?'won':'lost';resultEffect={shown:false,started:0,particles:[]};}
+    else {turn=opposite(side); if(!candidates(turn).length) notice=(turn==='red'?'红方':'黑方')+'无棋可走，请重新开始'; else if(turn==='black'&&!hotseat) aiAt=performance.now()+450;}
+    return true;
+  }
+  function ai() { if(phase!=='playing'||turn!=='black')return; var list=candidates('black'); if(list.length){var m=list[randomInt(list.length)];play(m.from,m.to);} else aiAt=0; }
+  function clickBoard(x,y) {
+    if(phase!=='playing'||(!hotseat&&turn!=='red'))return;
+    if(selected && targets.some(function(t){return t.x===x&&t.y===y;})){play(selected,{x:x,y:y});return;}
+    var p=board[y][x], mine=false;
+    if(p) mine = hotseat ? (p.hidden ? (turn==='red' ? y>=5 : y<=4) : p.color===turn) : ((p.hidden&&y>=5)||(!p.hidden&&p.color==='red'));
+    if(mine){selected={x:x,y:y};targets=legal(publicBoard(),x,y,turn);}else{selected=null;targets=[];}
+  }
+  var dpr=1, viewW=W, viewH=H;
+  // iOS Safari reports the large viewport in 100vh, so a fixed 100vh hides the bottom
+  // rows behind the toolbar. The visible viewport is the truth: size the canvas to it,
+  // then fit the whole 700x1200 design inside it (height first, so nothing is cut).
+  function visibleViewport(){var vv=window.visualViewport;return {w:(vv&&vv.width)||window.innerWidth||W,h:(vv&&vv.height)||window.innerHeight||H};}
+  function applyTransform(){ctx.setTransform(dpr*scale,0,0,dpr*scale,dpr*ox,dpr*oy);}
+  function resize(){
+    var vp=visibleViewport();viewW=Math.max(1,Math.round(vp.w));viewH=Math.max(1,Math.round(vp.h));
+    dpr=Math.min(window.devicePixelRatio||1,2);
+    canvas.style.width=viewW+'px';canvas.style.height=viewH+'px';
+    canvas.width=Math.round(viewW*dpr);canvas.height=Math.round(viewH*dpr);
+    scale=Math.min(viewW/W,viewH/H);ox=(viewW-W*scale)/2;oy=(viewH-H*scale)/2;
+    applyTransform();
+  }
+  function rect(x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.roundRect(x,y,w,h,r);if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.stroke();}}
+  function text(s,x,y,size,color,align){ctx.fillStyle=color;ctx.font=size+'px "Songti SC", "STSong", serif';ctx.textAlign=align||'left';ctx.textBaseline='middle';ctx.fillText(s,x,y);}
+  function line(x1,y1,x2,y2){ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();}
+  function button(x,y,w,h,label,active){rect(x,y,w,h,7,active?(online?accent():'#963d2e'):'#493a30','#ba9870');text(label,x+w/2,y+h/2,18,'#f4e1bc','center');}
+  function drawPiece(p,x,y){
+    ctx.save();ctx.shadowColor='rgba(40,22,12,.38)';ctx.shadowBlur=7;ctx.shadowOffsetY=3;
+    ctx.beginPath();ctx.arc(x,y,radius,0,Math.PI*2);ctx.fillStyle=p.hidden?'#805a39':'#efd5a6';ctx.fill();ctx.restore();
+    ctx.beginPath();ctx.arc(x,y,radius-3,0,Math.PI*2);ctx.lineWidth=1.5;ctx.strokeStyle=p.hidden?'#d0ad7a':p.color==='red'?'#a7352b':'#40382e';ctx.stroke();
+    ctx.beginPath();ctx.arc(x,y,radius-6,0,Math.PI*2);ctx.lineWidth=.6;ctx.stroke();
+    text(p.hidden?'隱':names[p.color][p.type],x,y+1,p.hidden?21:27,p.hidden?'#e7cba0':p.color==='red'?'#a12e25':'#302b28','center');
+  }
+  function drawExitConfirm(){
+    ctx.fillStyle='rgba(25,17,12,.62)';ctx.fillRect(0,0,W,H);
+    ctx.save();ctx.shadowColor='rgba(0,0,0,.45)';ctx.shadowBlur=26;rect(70,430,560,300,18,'#f1dfbb','#d5ac72');ctx.restore();
+    text('退出房间',350,486,27,accent(),'center');
+    text('退出后本局结束，房间号不再保留',350,532,17,'#6b5947','center');
+    button(110,600,240,76,'继续对局',true);
+    button(350,600,240,76,'确认退出',false);
+  }
+  var flipped=false;
+  // Theme accent follows the player's side: 朱砂 for red, 玄墨 for black,
+  // and a warm 花青 for practice/title where there is no room identity.
+  var THEME={red:'#a12e25',black:'#2b2a27',base:'#2c4f6b'};
+  function accent(){return online?(online.side==='red'?THEME.red:THEME.black):THEME.base;}
+  function syncFlip(){flipped=!!(online&&online.side==='black');}
+  function px(x){return bx+(flipped?8-x:x)*step;}
+  function py(y){return by+(flipped?9-y:y)*step;}
+  function drawCaptureFocus(now){
+    var f=captureFocus, elapsed=now-f.started, progress=Math.max(0,Math.min(1,elapsed/450)), eased=1-Math.pow(1-progress,3);
+    if(blurBuffer.width!==canvas.width||blurBuffer.height!==canvas.height){blurBuffer.width=canvas.width;blurBuffer.height=canvas.height;}
+    blurContext.clearRect(0,0,blurBuffer.width,blurBuffer.height);blurContext.drawImage(canvas,0,0);
+    ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.filter='blur(7px)';ctx.drawImage(blurBuffer,0,0);ctx.filter='none';ctx.restore();
+    ctx.fillStyle='rgba(25,17,12,.63)';ctx.fillRect(0,0,W,H);
+    ctx.save();ctx.shadowColor='rgba(0,0,0,.45)';ctx.shadowBlur=28;rect(45,410,610,360,18,'#f1dfbb','#d5ac72');ctx.restore();
+    text((f.actor==='red'?'红方':'黑方')+'  ·  吃子',350,452,27,'#805338','center');
+    ctx.save();ctx.translate(210+20*eased,575);ctx.scale(2,2);drawPiece(f.attacker,0,0);ctx.restore();
+    ctx.save();ctx.translate(490,575);ctx.scale(2,2);drawPiece(f.victim,0,0);ctx.restore();
+    text('吃掉',355,575,25,'#9b4936','center');
+    text((f.attacker.color==='red'?'红':'黑')+descriptionNames[f.attacker.color][f.attacker.type],230,666,21,f.attacker.color==='red'?'#a12e25':'#302b28','center');
+    text((f.victim.color==='red'?'红':'黑')+descriptionNames[f.victim.color][f.victim.type]+(f.wasHidden?' · 暗子揭晓':''),490,666,21,f.victim.color==='red'?'#a12e25':'#302b28','center');
+    text('棋局将自动继续 · 点击可关闭',350,726,17,'#9b8060','center');
+  }
+  function beginResult(now){
+    var win=winner===(online?online.side:'red');resultEffect.shown=true;resultEffect.started=now;soundResult(win);
+    for(var burst=0;burst<5;burst++){var cx=70+Math.random()*560,cy=250+Math.random()*650,delay=burst*.45;for(var i=0;i<24;i++){var a=i*Math.PI*2/24,s=35+Math.random()*80;resultEffect.particles.push({x:cx,y:cy,vx:Math.cos(a)*s,vy:Math.sin(a)*s,delay:delay,color:['#f5d076','#e27d64','#fff2c9','#daaa58'][i%4]});}}
+  }
+  function drawResult(now){
+    var e=(now-resultEffect.started)/1000,win=winner===(online?online.side:'red');ctx.fillStyle=win?'rgba(23,16,12,.65)':'rgba(15,16,22,.78)';ctx.fillRect(0,0,W,800);
+    if(win){ctx.save();ctx.beginPath();ctx.rect(0,0,W,800);ctx.clip();resultEffect.particles.forEach(function(p){var t=e-p.delay;if(t<0||t>1.8)return;ctx.globalAlpha=Math.min(1,(1.8-t)*1.2);ctx.fillStyle=p.color;ctx.beginPath();ctx.arc(p.x+p.vx*t,p.y+p.vy*t+22*t*t,3.4*(1-t/2),0,Math.PI*2);ctx.fill();});ctx.restore();ctx.globalAlpha=1;}
+    else {ctx.save();ctx.beginPath();ctx.rect(0,0,W,800);ctx.clip();for(var i=0;i<32;i++){var x=(i*83+17)%W,y=((i*113+e*32)%800);ctx.strokeStyle='rgba(160,173,189,.28)';ctx.lineWidth=1.4;line(x,y,x-8,y+21);}ctx.restore();}
+    rect(55,450,590,285,16,win?'#f1dfbb':'#2e3039',win?'#e6bb70':'#777b86');
+    text(win?'胜 利':'落 败',350,520,48,win?'#a23e2d':'#d8d7d4','center');
+    text((winner==='red'?'红方':'黑方')+'获胜 · '+(win?'妙手成局':'再战一局'),350,562,21,win?'#805338':'#bbc0c6','center');
+    if(online&&online.status==='finished'){
+      button(190,600,320,74,rematchAsked()?'等待对方同意…':'再来一局',!rematchAsked());
+      text('点击其他地方查看棋盘',350,700,16,win?'#9b8060':'#a7abb1','center');
+    } else text('点击画面继续',350,675,18,win?'#9b8060':'#a7abb1','center');
+  }
+  function draw(){
+    // Paint the whole backing store first so the letterboxed side areas on wide
+    // screens carry the same backdrop instead of flat black bars.
+    ctx.setTransform(1,0,0,1,0,0);
+    var full=ctx.createLinearGradient(0,0,canvas.width,canvas.height);full.addColorStop(0,'#31271f');full.addColorStop(1,'#161713');
+    ctx.fillStyle=full;ctx.fillRect(0,0,canvas.width,canvas.height);
+    applyTransform();
+    ctx.clearRect(0,0,W,H);var bg=ctx.createLinearGradient(0,0,W,H);bg.addColorStop(0,'#31271f');bg.addColorStop(1,'#161713');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+    rect(14,46,672,746,12,'#735038','#c09b6b');rect(24,56,652,726,5,'#d5ae77','#f1d29c');
+    var wood=ctx.createLinearGradient(24,56,676,782);wood.addColorStop(0,'#e9cb98');wood.addColorStop(.5,'#d9b27c');wood.addColorStop(1,'#c69c67');rect(30,62,640,714,2,wood,'#88613e');
+    text('弈  ·  暗棋',28,24,24,'#e8d2a8');text('一局藏锋，方寸见心',672,24,15,'#ab997b','right');
+    ctx.strokeStyle='#785336';ctx.lineWidth=1.15;
+    for(var i=0;i<10;i++)line(bx,by+i*step,bx+8*step,by+i*step);
+    for(var j=0;j<9;j++){if(j===0||j===8)line(bx+j*step,by,bx+j*step,by+9*step);else{line(bx+j*step,by,bx+j*step,by+4*step);line(bx+j*step,by+5*step,bx+j*step,by+9*step);}}
+    line(bx+3*step,by,bx+5*step,by+2*step);line(bx+5*step,by,bx+3*step,by+2*step);line(bx+3*step,by+7*step,bx+5*step,by+9*step);line(bx+5*step,by+7*step,bx+3*step,by+9*step);
+    text(flipped?'漢 界':'楚 河',bx+step*2,by+step*4.5,22,'#8e633f','center');text(flipped?'楚 河':'漢 界',bx+step*6,by+step*4.5,22,'#8e633f','center');
+    if(board){if(lastMove){[lastMove.from,lastMove.to].forEach(function(p){ctx.beginPath();ctx.arc(px(p.x),py(p.y),radius+7,0,Math.PI*2);ctx.fillStyle='rgba(150,72,42,.18)';ctx.fill();ctx.lineWidth=2;ctx.strokeStyle='rgba(150,72,42,.45)';ctx.stroke();});}targets.forEach(function(t){ctx.beginPath();ctx.arc(px(t.x),py(t.y),13,0,Math.PI*2);ctx.fillStyle='rgba(55,100,72,.43)';ctx.fill();});
+      board.forEach(function(row,y){row.forEach(function(p,x){if(p)drawPiece(p,px(x),py(y));});});
+      if(selected){ctx.strokeStyle='#527b53';ctx.lineWidth=3;ctx.beginPath();ctx.arc(px(selected.x),py(selected.y),35,0,Math.PI*2);ctx.stroke();}}
+    rect(14,806,672,380,12,'#eee0c4',online?accent():'#b89970');
+    text(online?'房间 '+online.room+' · 你执'+(online.side==='red'?'红':'黑'):phase==='title'?'选择对弈':phase==='won'?'红方胜':phase==='lost'?'黑方胜':hotseat?(turn==='red'?'红方行棋':'黑方行棋'):turn==='red'?'红方行棋':'黑方思考中',38,844,online?20:25,accent());
+    text(notice||(phase==='title'?(netAvailable?'人机练习、同屏双人或房间对战':'人机练习或同屏双人'):hotseat?'同屏双人 · 轮流行棋':'选择暗棋或己方明棋'),38,880,16,'#6b5947');
+    if(online&&online.status==='finished'){button(340,823,150,70,'退出房间',false);button(500,823,162,70,rematchAsked()?'等待中…':'再来一局',!rematchAsked());}
+    else button(450,823,210,70,online?'退出房间':phase==='title'?'人机对弈':'重新开始',true);
+    ctx.strokeStyle='#c9ad85';line(38,909,662,909);
+    text('吃子记录',38,936,20,'#5e4c3c');text(online?'仅记录当前会话观察到的吃子':'最新在左上，按编号倒序',662,936,14,'#8c7962','right');
+    if(!captures.length) text('尚无吃子',38,980,16,'#a38d73');
+    captures.slice(-4).reverse().forEach(function(c,i){
+      var xx=38+(i%2)*310, yy=977+Math.floor(i/2)*48;
+      if(i===0) rect(xx-7,yy-20,304,40,6,'#dec8a7',null);
+      text('#'+(captures.length-i),xx,yy,14,i===0?accent():'#88735a');
+      ctx.beginPath();ctx.arc(xx+57,yy,14,0,Math.PI*2);ctx.fillStyle='#f8e8ca';ctx.fill();ctx.lineWidth=1;ctx.strokeStyle=c.color==='red'?'#a7352b':'#40382e';ctx.stroke();
+      text(names[c.color][c.type],xx+57,yy+1,17,c.color==='red'?'#a12e25':'#302b28','center');
+      text((c.actor==='red'?'红':'黑')+'吃'+(c.color==='red'?'红':'黑')+descriptionNames[c.color][c.type]+(c.wasHidden?'（暗）':''),xx+78,yy,15,'#554334');
+      if(i===0) text('最新',xx+278,yy,14,accent(),'right');
+    });
+    ctx.strokeStyle='#c9ad85';line(38,1054,662,1054);
+    button(38,1075,298,74,musicOn?'♪ 音乐：开':'♪ 音乐：关',false);
+    button(364,1075,298,74,effectsOn?'音效：开':'音效：关',false);
+    if(phase==='title'){
+      ctx.fillStyle='rgba(31,23,18,.68)';ctx.fillRect(30,62,640,714);
+      text('暗 棋',350,268,44,'#f9e6c4','center');
+      text('一局藏锋 · 方寸见心',350,322,18,'#d8c39c','center');
+      button(70,430,260,74,'人机对弈',true);
+      button(370,430,260,74,'同屏双人',netAvailable);
+      if(netAvailable){
+        button(70,528,260,74,'创建房间',false);
+        button(370,528,260,74,'加入房间',false);
+        text('联网对战须从同源服务器页面打开',350,646,16,'#f9e6c4','center');
+      } else {
+        text('同屏双人：两人共用一台设备轮流走棋',350,560,17,'#f9e6c4','center');
+        text('联网对战请使用同源服务器版本',350,592,16,'#d8c39c','center');
+      }
+    }
+    if(captureFocus) drawCaptureFocus(performance.now());
+    else if(resultEffect&&resultEffect.shown) drawResult(performance.now());
+    if(confirmExit) drawExitConfirm();
+  }
+  function pointer(e){e.preventDefault();enableAudio();if(confirmExit){var rc=canvas.getBoundingClientRect(),cx=(e.clientX-rc.left-ox)/scale,cy=(e.clientY-rc.top-oy)/scale;if(cy>=600&&cy<=676&&cx>=110&&cx<=350){confirmExit=false;return;}if(cy>=600&&cy<=676&&cx>=350&&cx<=590){leaveRoom();return;}if(cy<430||cy>730){confirmExit=false;}return;}if(captureFocus){if(performance.now()-captureFocus.started>400)captureFocus=null;return;}var r=canvas.getBoundingClientRect(),x=(e.clientX-r.left-ox)/scale,y=(e.clientY-r.top-oy)/scale;
+    if(resultEffect&&resultEffect.shown){
+      if(online&&online.status==='finished'){
+        if(x>=190&&x<=510&&y>=600&&y<=674){requestRematch();return;}
+        if(y>=823&&y<=893&&x>=340&&x<=490){resultEffect=null;confirmExit=true;return;}
+        if(y>=823&&y<=893&&x>=500&&x<=662){requestRematch();return;}
+      }
+      resultEffect=null;return;
+    }if(y>=1075&&y<=1149&&x>=38&&x<=336){musicOn=!musicOn;if(musicGain)musicGain.gain.setTargetAtTime(musicOn?MUSIC_VOLUME:0,audio.currentTime,.04);nextNote=0;return;}if(y>=1075&&y<=1149&&x>=364&&x<=662){effectsOn=!effectsOn;if(effectsGain)effectsGain.gain.setTargetAtTime(effectsOn?EFFECTS_VOLUME:0,audio.currentTime,.01);return;}if(y>=823&&y<=893){
+      if(online&&online.status==='finished'){
+        if(x>=340&&x<=490){confirmExit=true;return;}
+        if(x>=500&&x<=662){requestRematch();return;}
+      } else if(x>=450&&x<=660){if(online){confirmExit=true;}else start();return;}
+    }if(phase==='title'){
+      if(y>=430&&y<=504){if(x>=70&&x<=330){start();return;}if(x>=370&&x<=630){start('hotseat');return;}}
+      if(netAvailable&&y>=528&&y<=602){if(x>=70&&x<=330){openRoom(false);return;}if(x>=370&&x<=630){openRoom(true);return;}}
+      if(x>=30&&x<=670&&y>=62&&y<=776){start();return;}
+      return;
+    }var col=Math.round((x-bx)/step),row=Math.round((y-by)/step);if(inside(col,row)&&Math.abs(x-(bx+col*step))<step*.49&&Math.abs(y-(by+row*step))<step*.49){var bc=flipped?8-col:col,br=flipped?9-row:row;if(online)clickOnline(bc,br);else clickBoard(bc,br);}}
+  canvas.addEventListener('pointerdown',pointer);window.addEventListener('keydown',function(e){if(e.key==='Enter'&&(phase==='title'||phase==='won'||phase==='lost')){e.preventDefault();enableAudio();start();}});window.addEventListener('resize',resize);window.addEventListener('orientationchange',resize);
+  if(window.visualViewport){window.visualViewport.addEventListener('resize',resize);window.visualViewport.addEventListener('scroll',resize);}
+  window.addEventListener('pageshow',resize);
+  window.__gameState=function(){return {phase:phase,score:0,hearts:1,fps:fps,hero:{x:0,y:0},pickups:[],enemies:[],world:{w:W,h:H},turn:turn||null,winner:winner||null,room:online?online.room:null,side:online?online.side:null,notice:notice,confirmExit:confirmExit,rematch:online?(online.rematch||[]):[],round:online?(online.round||1):1,hotseat:hotseat,net:netAvailable};};
+  window.__autoplay=function(){if(online||hotseat||captureFocus||phase!=='playing'||turn!=='red')return;var list=candidates('red');if(list.length){var m=list[randomInt(list.length)];play(m.from,m.to);}};
+  function frame(t){if(prev){var dt=t-prev;if(dt>0)fps=fps*.9+1000/dt*.1;}prev=t;if(captureFocus&&t-captureFocus.started>=captureFocus.duration)captureFocus=null;if(!captureFocus&&resultEffect&&!resultEffect.shown)beginResult(t);if(resultEffect&&resultEffect.shown&&t-resultEffect.started>5000&&!(online&&online.status==='finished'))resultEffect=null;if(!captureFocus&&aiAt&&t>=aiAt){aiAt=0;ai();}if(!resultEffect)music();draw();requestAnimationFrame(frame);}
+  resize();requestAnimationFrame(frame);
+})();
+</script>
+</body></html>
