@@ -24,7 +24,32 @@
 
 GitHub Pages 只能托管静态文件，跑不了 Node 服务，所以**在线版没有房间对战**。需要联网对战时在本地启动服务（见下）。
 
-## Docker 部署（推荐）
+## 一行命令部署
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lindengjian/dark-xiangqi/master/deploy.sh | bash
+```
+
+脚本会检查 Docker、拉源码、构建镜像、起容器、等健康检查，最后打印访问地址。重跑即升级（自动替换旧容器）。
+
+公网域名部署：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lindengjian/dark-xiangqi/master/deploy.sh \
+  | ALLOWED_HOSTS=xiangqi.example.com TRUST_PROXY=1 bash
+```
+
+可调的环境变量：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `PORT` | `3218` | 宿主机端口 |
+| `ALLOWED_HOSTS` | 空 | 允许的域名，逗号分隔 |
+| `TRUST_PROXY` | `0` | 反代终结 TLS 时设 `1` |
+| `TRUST_ANY_HOST` | `0` | 接受任意 Host，仅纯内网用 |
+| `NAME` | `xiangqi` | 容器名 |
+
+## Docker 部署（手动）
 
 镜像里已经包含页面和房间 API，跑起来就能对战，不需要额外挂文件或装依赖。
 
@@ -107,8 +132,9 @@ npm test
 ```
 index.html          静态版（GitHub Pages 用）：人机 + 同屏双人，无网络请求
 online.html         服务版页面：CSP 由 server/online.js 按请求改写
+deploy.sh           一行命令部署脚本：检查环境、构建、起容器、等健康
 Dockerfile          镜像：node:22-alpine + 上面这些文件，非 root 运行
-docker-compose.yml  一条命令起服务
+docker-compose.yml  用 compose 起服务
 server/
   game.js           权威规则：洗牌、走法枚举、落子、AI
   game.test.js      规则测试
