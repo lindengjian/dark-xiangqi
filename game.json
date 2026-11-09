@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "template": "collector",
+  "title": "暗棋象棋",
+  "slots": {
+    "hero": {
+      "file": "assets/hero.svg",
+      "label": "暗棋棋子",
+      "size": [
+        256,
+        256
+      ],
+      "transparent": true
+    }
+  },
+  "rules": {
+    "duration": 60,
+    "hearts": 3,
+    "heroSpeed": 320,
+    "enemySpeed": 120,
+    "enemySpeedGrowth": 3,
+    "enemySpawnEvery": 4,
+    "maxEnemies": 8,
+    "maxPickups": 5,
+    "heroSize": 76,
+    "enemySize": 68,
+    "pickupSize": 44,
+    "shield": {
+      "enabled": false,
+      "every": 3,
+      "seconds": 4
+    }
+  },
+  "orientation": "portrait",
+  "style": "中国传统木质棋盘，素雅国风，清晰的红黑棋子"
+}

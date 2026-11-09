@@ -1,11 +1,4 @@
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; media-src data: blob:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'">
-<title>暗棋象棋</title>
-<style>html,body{margin:0;height:100%;overflow:hidden;background:#000}canvas{display:block;width:100vw;height:100vh;touch-action:none;outline:none}</style></head><body><canvas id="game" tabindex="0"></canvas>
-<script>window.GAME={"title":"暗棋象棋","rules":{"duration":60,"hearts":3,"heroSpeed":320,"enemySpeed":120,"enemySpeedGrowth":3,"enemySpawnEvery":4,"maxEnemies":8,"maxPickups":5,"heroSize":76,"enemySize":68,"pickupSize":44,"shield":{"enabled":false,"every":3,"seconds":4}},"slots":{"hero":{"tile":false,"custom":true}},"assets":{"hero":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNTYgMjU2IiB3aWR0aD0iMjU2IiBoZWlnaHQ9IjI1NiI+PGNpcmNsZSBjeD0iMTI4IiBjeT0iMTMyIiByPSIxMDEiIGZpbGw9IiM0ZDMwMjEiLz48Y2lyY2xlIGN4PSIxMjgiIGN5PSIxMjQiIHI9IjEwMSIgZmlsbD0iI2FmNzk1MCIgc3Ryb2tlPSIjNGQzMDIxIiBzdHJva2Utd2lkdGg9IjgiLz48Y2lyY2xlIGN4PSIxMjgiIGN5PSIxMjQiIHI9IjgzIiBmaWxsPSIjNzY1MDM4IiBzdHJva2U9IiNkZGI3N2MiIHN0cm9rZS13aWR0aD0iNCIvPjxjaXJjbGUgY3g9IjEyOCIgY3k9IjEyNCIgcj0iNzMiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2Q3YWY3NyIgc3Ryb2tlLXdpZHRoPSIyIi8+PHRleHQgeD0iMTI4IiB5PSIxNTUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJzZXJpZiIgZm9udC1zaXplPSI4OCIgZmlsbD0iI2YxZDRhMiI+6ZqQPC90ZXh0Pjwvc3ZnPg=="}};</script>
-<script>/* 暗棋象棋 — independent local practice, based on dark-xiangqi/game.js. */
+/* 暗棋象棋 — independent local practice, based on dark-xiangqi/game.js. */
 (function () {
   'use strict';
   var canvas = document.getElementById('game');
@@ -497,5 +490,3 @@
   function frame(t){if(prev){var dt=t-prev;if(dt>0)fps=fps*.9+1000/dt*.1;}prev=t;if(captureFocus&&t-captureFocus.started>=captureFocus.duration)captureFocus=null;if(!captureFocus&&resultEffect&&!resultEffect.shown)beginResult(t);if(resultEffect&&resultEffect.shown&&t-resultEffect.started>5000&&!(online&&online.status==='finished'))resultEffect=null;if(!captureFocus&&aiAt&&t>=aiAt){aiAt=0;ai();}if(!resultEffect)music();draw();requestAnimationFrame(frame);}
   resize();requestAnimationFrame(frame);
 })();
-</script>
-</body></html>

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#282c26">
+  <title>暗棋 · 楚河汉界</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="masthead"><a class="brand" href="/" aria-label="暗棋首页"><span class="brand-seal">棋</span><span><strong>暗棋</strong><small>一局之间，别有天地</small></span></a><span class="header-note">楚河汉界 · 方寸乾坤</span></header>
+    <main class="layout">
+      <section class="game-area" aria-label="对弈棋盘">
+        <div class="game-heading"><div><h1>落子，见天地</h1><p>藏锋于局，运筹于心。</p></div><div class="game-status"><span class="status-dot"></span><span id="statusText">等待开局</span></div></div>
+        <div class="board-frame"><div class="board" id="board" role="grid" aria-label="中国象棋棋盘"><svg class="board-lines" viewBox="0 0 800 900" preserveAspectRatio="none" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2"><path d="M0 0H800V900H0Z M0 100H800 M0 200H800 M0 300H800 M0 400H800 M0 500H800 M0 600H800 M0 700H800 M0 800H800"/><path d="M100 0V400 M200 0V400 M300 0V400 M400 0V400 M500 0V400 M600 0V400 M700 0V400 M100 500V900 M200 500V900 M300 500V900 M400 500V900 M500 500V900 M600 500V900 M700 500V900"/><path d="M300 0L500 200 M500 0L300 200 M300 700L500 900 M500 700L300 900"/></g></svg><div class="river" aria-hidden="true"><span>楚 河</span><span>漢 界</span></div><div id="squares" class="squares"></div></div></div>
+        <div class="board-footer"><span>黑方在上 <i></i> 红方在下</span><span id="boardHint">创建或加入房间，开始对弈</span></div>
+      </section>
+      <aside class="sidebar">
+        <section class="side-section"><div class="section-title"><h2>对弈</h2><span>THE GAME</span></div><p class="section-description">选择一种方式，开启你的棋局。</p><div class="create-buttons"><button id="aiButton" class="button button-primary" type="button">与电脑对弈 <span>↗</span></button><button id="roomButton" class="button button-secondary" type="button">创建双人房间 <span>＋</span></button></div><form id="joinForm" class="join-form"><label for="roomInput">加入已有房间</label><div class="join-row"><input id="roomInput" name="room" placeholder="输入房间号" autocomplete="off" required><button class="button join-button" type="submit">加入</button></div></form></section>
+        <section class="side-section room-section"><div class="section-title"><h2>本局信息</h2><span>IN SESSION</span></div><dl class="details"><div><dt>房间号</dt><dd><span id="roomValue">—</span> <button id="copyButton" type="button" class="copy-button" hidden>复制</button></dd></div><div><dt>对弈模式</dt><dd id="modeValue">尚未开局</dd></div><div><dt>执棋方</dt><dd id="sideValue">—</dd></div><div><dt>当前行棋</dt><dd id="turnValue">—</dd></div></dl><p id="feedback" class="feedback" role="status" aria-live="polite">静待一局好棋。</p><button id="restartButton" class="restart" type="button" hidden>再开一局 <span>↗</span></button></section>
+        <section class="side-section rules"><div class="section-title"><h2>行棋小笺</h2><span>HOW TO PLAY</span></div><ol><li><b>翻开暗子</b><span>点击任意暗子，依照可走提示行动。</span></li><li><b>落子交锋</b><span>明子只能选择己方棋子；点击标记位置行棋。</span></li><li><b>胜负已分</b><span>行棋与胜负以棋局判定为准，房间状态会自动更新。</span></li></ol></section>
+      </aside>
+    </main><footer class="footer"><span>棋逢对手，落子无悔</span><span>在方寸之间，尽览千军万马</span></footer>
+  </div>
+</body></html>

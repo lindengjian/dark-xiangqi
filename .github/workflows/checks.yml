@@ -1,0 +1,39 @@
+name: checks
+
+# 静态检查 + 规则测试。不需要 Docker，几十秒跑完。
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check
+        run: |
+          for f in server/*.js scripts/*.js; do node --check "$f"; done
+      - name: Unit tests
+        run: npm test
+      - name: Static page is generated from the export
+        run: |
+          npm run build:pages
+          cp index.html /tmp/first.html
+          npm run build:pages
+          cmp index.html /tmp/first.html
+          # 静态页必须带静态标记，且不能有嵌套 script
+          grep -q "window.DARK_XIANGQI_STATIC=true" index.html
+          ! grep -q "<script><script>" index.html
+      - name: No non-ASCII file names
+        run: |
+          bad=$(git ls-files | grep -P '[^\x00-\x7F]' || true)
+          if [ -n "$bad" ]; then
+            echo "文件名必须用英文："
+            echo "$bad"
+            exit 1
+          fi

@@ -1,5 +1,9 @@
 node_modules/
 .DS_Store
 *.log
+
+# Game Studio 编辑器状态：版本快照、预览图，体积大且是本机产物
 .studio/
+
+# 构建中间产物；真正需要发布的是 export/ 与 index.html
 dist/

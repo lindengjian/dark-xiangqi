@@ -118,6 +118,8 @@ cd dark-xiangqi
 npm start            # 默认 http://127.0.0.1:3218/
 ```
 
+只玩单机也可以直接双击 `index.html`，人机与同屏双人都能跑，不需要服务。
+
 局域网内让另一台设备加入：
 
 ```bash
@@ -134,25 +136,62 @@ HOST=0.0.0.0 PORT=3221 npm start
 ## 测试
 
 ```bash
-npm test
+npm test              # 规则测试，11 项
+npm run test:server   # 服务端双客户端联调（需先 npm start）
+npm run test:ui       # 真实浏览器双开联调（需先 npm start）
 ```
 
-11 项规则测试，覆盖洗牌完整性、暗棋按初始棋位走法、明棋归属、吃将判胜、AI 合法性等。
+规则测试覆盖洗牌完整性、暗棋按初始棋位走法、明棋归属、吃将判胜、AI 合法性等。
 
 ## 目录
 
+游戏本体是 Game Studio 工程，服务端只负责房间；两边放在同一个目录里。
+
 ```
-index.html          静态版（GitHub Pages 用）：人机 + 同屏双人，无网络请求
-online.html         服务版页面：CSP 由 server/online.js 按请求改写
-deploy.sh           一行命令部署脚本：检查环境、构建、起容器、等健康
-Dockerfile          镜像：node:22-alpine + 上面这些文件，非 root 运行
-docker-compose.yml  用 compose 起服务
+game.js             Game Studio 游戏源码（画面、交互、AI、联网客户端）
+game.json           工程配置：标题、竖屏、素材槽
+assets/             素材
+dist/index.html     Game Studio 构建产物
+export/dark-xiangqi.html   Game Studio 导出产物 —— 唯一的页面源文件
+index.html          GitHub Pages 静态版，由 scripts/build-pages.js 从导出生成
+.studio/            编辑器状态：版本历史、快照、预览图
+
 server/
-  game.js           权威规则：洗牌、走法枚举、落子、AI
+  game.js           权威规则：洗牌、走法枚举、落子、AI（与前端规则各自独立）
   game.test.js      规则测试
   server.js         房间 API：create / join / move / state / moves / rematch
-  online.js         同源包装：服务页面 + 房间 API + /healthz
+  online.js         同源包装：页面 + 房间 API + /healthz，按请求改写 CSP
+  public/           早期的独立房间界面（/legacy 可访问，保留备用）
+
+scripts/
+  build-pages.js    从 export/ 生成静态版 index.html
+  test-server.js    服务端双客户端联调
+  test-ui.js        真实浏览器双开联调
+  screenshot.js     中局截图
+
+docs/
+  lan-play.md       局域网房间对战说明
+
+LICENSE             MIT
+CONTRIBUTING.md     贡献指南（含两份规则实现的提醒）
+.editorconfig       缩进、换行、编码统一
+
+deploy.sh           一行命令部署脚本：检查环境、构建、起容器、等健康
+Dockerfile          镜像：node:22-alpine，非 root 运行
+docker-compose.yml  用 compose 起服务
 ```
+
+## 改完游戏之后
+
+`game.js` 是 Game Studio 的工程源码，改完要在 Game Studio 里构建并导出，然后同步静态页：
+
+```bash
+npm run build:pages     # 从 export/ 重新生成 index.html
+npm test                # 规则测试
+npm run test:ui         # 真实浏览器双开联调（需先 npm start）
+```
+
+服务端读的是 `export/dark-xiangqi.html`，所以导出一次，本地服务和静态页就都更新了。
 
 ## 房间 API
 
@@ -165,6 +204,10 @@ server/
 | POST | `/api/move` | `{room,token,from,to}` → 走子，服务端判定 |
 | POST | `/api/rematch` | `{room,token}` → 请求再来一局，双方都请求才重开 |
 
+## 贡献
+
+改动前请看一眼 [CONTRIBUTING.md](CONTRIBUTING.md)。特别提醒：规则有**两份实现**（`game.js` 与 `server/game.js`），改规则要两边同步。
+
 ## 许可
 
-MIT
+[MIT](LICENSE)

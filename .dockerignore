@@ -3,6 +3,11 @@
 node_modules
 npm-debug.log*
 .DS_Store
+.studio
+dist
+scripts
+docs
 README.md
-index.html
+LICENSE
+.editorconfig
 *.md

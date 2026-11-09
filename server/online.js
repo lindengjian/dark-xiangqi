@@ -7,7 +7,8 @@ const net = require('node:net');
 const {server} = require('./server');
 const handler = server.listeners('request')[0];
 server.removeListener('request', handler);
-const gameFile = path.resolve(__dirname, '..', 'online.html');
+// 页面直接取 Game Studio 的导出产物，合并后只有一份页面源文件。
+const gameFile = path.resolve(__dirname, '..', 'export', 'dark-xiangqi.html');
 
 // Hosts this process answers for. Loopback and RFC1918 are always allowed so the
 // same image works for LAN play; set ALLOWED_HOSTS=xiangqi.example.com for a
@@ -53,7 +54,7 @@ server.on('request', (req, res) => {
   }
   if ((url.pathname === '/' || url.pathname === '/play') && (req.method === 'GET' || req.method === 'HEAD')) {
     return fs.readFile(gameFile, 'utf8', (err, html) => {
-      if (err) { res.writeHead(503, {'Content-Type':'text/plain; charset=utf-8'}); return res.end('缺少 online.html，请先构建页面。'); }
+      if (err) { res.writeHead(503, {'Content-Type':'text/plain; charset=utf-8'}); return res.end('缺少 export/dark-xiangqi.html，请先在 Game Studio 里构建并导出。'); }
       // The exported page ships with connect-src 'none'; the room API lives on this origin.
       const patched = html.replace("connect-src 'none'", "connect-src 'self'");
       if (patched === html) { res.writeHead(500); return res.end('Unexpected game security policy'); }

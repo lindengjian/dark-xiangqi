@@ -1,0 +1,28 @@
+# 统一编辑器与 Git 行为，避免不同机器提交出差异噪音。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Markdown 的行尾双空格是有意义的换行，不要删。
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab
+
+# 构建产物与编辑器状态不参与格式统一。
+[{dist,export}/**]
+insert_final_newline = false
+trim_trailing_whitespace = false
+
+[*.html]
+indent_size = 2

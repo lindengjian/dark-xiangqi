@@ -12,7 +12,9 @@ WORKDIR /app
 RUN mkdir -p /app/server && chown node:node /app/server && chmod 755 /app/server
 COPY --chown=node:node --chmod=644 package.json ./
 COPY --chown=node:node --chmod=644 server/game.js server/game.test.js server/online.js server/server.js ./server/
-COPY --chown=node:node --chmod=644 online.html ./
+# 页面取 Game Studio 的导出产物，服务端在请求时把 connect-src 改成 'self'。
+RUN mkdir -p /app/export && chown node:node /app/export && chmod 755 /app/export
+COPY --chown=node:node --chmod=644 export/dark-xiangqi.html ./export/
 
 USER node
 
