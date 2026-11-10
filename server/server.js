@@ -58,13 +58,20 @@ async function handler(req,res) {
       if (req.method === 'POST' && req.headers.origin && !/^application\/json(?:\s*;|\s*$)/i.test(req.headers['content-type'] || '')) fail(415,'JSON content type required');
       if (req.method === 'POST' && url.pathname === '/api/create') {
         const input=await body(req); if (!['ai','room'].includes(input.mode)) fail(400,'Invalid mode');
-        const code=roomCode(), key=token(), room={game:game.initialGame(input.mode),players:new Map([[key,'red']]),rematch:new Set(),round:1}; rooms.set(code,room);
+        const code=roomCode(), key=token(), room={game:game.initialGame(input.mode),players:new Map([[key,'red']]),joinKeys:new Map(),rematch:new Set(),round:1}; rooms.set(code,room);
         return send(res,200,{room:code,token:key,side:'red',...payload(room)});
       }
       if (req.method === 'POST' && url.pathname === '/api/join') {
         const input=await body(req); const code=typeof input.room === 'string' ? input.room.toUpperCase() : ''; const room=rooms.get(code);
-        if (!room) fail(404,'Room not found'); if (room.game.mode !== 'room' || room.players.size >= 2) fail(409,'Room is full');
-        const key=token(); room.players.set(key,'black'); room.game.status='playing'; return send(res,200,{room:code,token:key,side:'black',...payload(room)});
+        if (!room) fail(404,'Room not found');
+        // A private, high-entropy join key lets a tab safely retry an interrupted join.
+        // It is never part of the invitation URL and is optional for older clients.
+        const joinKey=input.joinKey;
+        if (joinKey !== undefined && (typeof joinKey !== 'string' || !/^[a-f0-9]{48}$/.test(joinKey))) fail(400,'Invalid join key');
+        const previous=joinKey && room.joinKeys.get(joinKey);
+        if (previous) return send(res,200,{room:code,token:previous,side:'black',...payload(room)});
+        if (room.game.mode !== 'room' || room.players.size >= 2) fail(409,'Room is full');
+        const key=token(); room.players.set(key,'black'); if (joinKey) room.joinKeys.set(joinKey,key); room.game.status='playing'; return send(res,200,{room:code,token:key,side:'black',...payload(room)});
       }
       if (req.method === 'POST' && url.pathname === '/api/move') {
         const input=await body(req), {room,side}=authorize(input.room,input.token);

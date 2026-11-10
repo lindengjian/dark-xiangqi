@@ -34,9 +34,16 @@
   var blurBuffer = document.createElement('canvas'), blurContext = blurBuffer.getContext('2d');
   var resultEffect=null;
   var online=null, onlineEpoch=0, onlineBusy=false, onlineSelecting=0, pollTimer=null, confirmExit=false, rematchBusy=false;
-  function leaveOnline(){onlineEpoch++;online=null;onlineBusy=false;onlineSelecting++;confirmExit=false;flipped=false;rematchBusy=false;if(pollTimer)clearTimeout(pollTimer);pollTimer=null;}
+  var ROOM_SESSION='dark-xiangqi-room-session', inviteFeedback='', inviteFeedbackUntil=0;
+  function saveRoomSession(value){try{if(value)sessionStorage.setItem(ROOM_SESSION,JSON.stringify(value));else sessionStorage.removeItem(ROOM_SESSION);}catch(e){}}
+  function readRoomSession(){try{return JSON.parse(sessionStorage.getItem(ROOM_SESSION)||'null');}catch(e){return null;}}
+  function validRoom(code){return typeof code==='string'&&/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/.test(code);}
+  function newJoinKey(){try{var bytes=new Uint8Array(24);window.crypto.getRandomValues(bytes);return Array.from(bytes,function(b){return b.toString(16).padStart(2,'0');}).join('');}catch(e){return null;}}
+  function showInviteFeedback(message){inviteFeedback=message;inviteFeedbackUntil=Date.now()+10000;}
+  function currentNotice(){return Date.now()<inviteFeedbackUntil?inviteFeedback:notice;}
+  function leaveOnline(){onlineEpoch++;online=null;onlineBusy=false;onlineSelecting++;confirmExit=false;flipped=false;rematchBusy=false;inviteFeedbackUntil=0;saveRoomSession(null);if(pollTimer)clearTimeout(pollTimer);pollTimer=null;}
   function leaveRoom(){leaveOnline();pickDifficulty=false;phase='title';board=null;notice='已退出房间';captures=[];selected=null;targets=[];}
-  function api(path,options){return fetch(path,options).then(function(r){return r.json().catch(function(){throw new Error('服务响应无效');}).then(function(data){if(!r.ok)throw new Error(data.error||'请求失败');return data;});});}
+  function api(path,options){return fetch(path,options).then(function(r){return r.json().catch(function(){throw new Error('服务响应无效');}).then(function(data){if(!r.ok){var error=new Error(data.error||'请求失败');error.status=r.status;throw error;}return data;});});}
   function post(path,data){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),cache:'no-store'});}
   function query(path,extra){var p=new URLSearchParams({room:online.room,token:online.token});if(extra)Object.keys(extra).forEach(function(k){p.set(k,extra[k]);});return api(path+'?'+p.toString(),{cache:'no-store'});}
   function onlineError(e){var msg=e&&e.message||'';return /Room not found/i.test(msg)?'房间不存在或已失效':/Room is full/i.test(msg)?'房间已满':/Illegal move/i.test(msg)?'走法无效，正在同步':/Invalid token/i.test(msg)?'房间身份已失效':'网络不可用：请通过同源服务器页面打开；Studio 预览禁止联网';}
@@ -53,16 +60,69 @@
       if(cap&&attacker){captures.push({actor:actor,color:cap.color,type:cap.type,wasHidden:!!(victim&&victim.hidden)});captureFocus={actor:actor,attacker:attacker,victim:cap,wasHidden:!!(victim&&victim.hidden),started:performance.now(),duration:2400};}
       selected=null;targets=[];onlineSelecting++;
     }
+    if(online.status==='waiting'&&s.status!=='waiting')inviteFeedbackUntil=0;
     board=s.board;turn=s.turn;winner=s.winner;lastMove=s.lastMove;online.signature=signature;online.status=s.status;syncFlip();
     phase=s.status==='finished'?(winner===online.side?'won':'lost'):'playing';
     if(s.status==='finished'&&!online.finished){online.finished=true;resultEffect={shown:false,started:0,particles:[]};}
     notice=newRound?'第 '+(online.round||1)+' 局开始':s.status==='waiting'?'等待另一位玩家加入':s.status==='finished'?(rematchAsked()?'已请求再来一局，等待对方同意':opponentAsked()?'对方想再来一局，点「再来一局」开始':'对局结束 · 可再来一局'):turn===online.side?'轮到你行棋':'等待对方行棋';
   }
   function poll(epoch){if(!online||epoch!==onlineEpoch)return;if(onlineBusy){pollTimer=setTimeout(function(){poll(epoch);},700);return;}onlineBusy=true;query('/api/state').then(function(data){if(epoch===onlineEpoch)applyState(data.state,false,data);}).catch(function(e){if(epoch===onlineEpoch)notice=onlineError(e);}).finally(function(){if(epoch!==onlineEpoch)return;onlineBusy=false;pollTimer=setTimeout(function(){poll(epoch);},1000);});}
-  function openRoom(join){
-    if(onlineBusy)return;var code=join?window.prompt('请输入六位房间号') : null;if(join&&code===null)return;if(join&&!/^[A-Za-z2-9]{6}$/.test(code.trim())){notice='请输入有效的六位房间号';return;}
-    leaveOnline();var epoch=onlineEpoch;onlineBusy=true;notice='正在连接房间…';
-    post(join?'/api/join':'/api/create',join?{room:code.trim().toUpperCase()}:{mode:'room'}).then(function(data){if(epoch!==onlineEpoch)return;online={room:data.room,token:data.token,side:data.side,status:data.state.status,signature:null,finished:false,rematch:[],round:data.round||1};rematchBusy=false;captures=[];captureFocus=null;resultEffect=null;aiAt=0;selected=null;targets=[];applyState(data.state,true,data);}).catch(function(e){if(epoch===onlineEpoch)notice=onlineError(e);}).finally(function(){if(epoch!==onlineEpoch)return;onlineBusy=false;if(online)poll(epoch);});
+  function adoptRoom(data){
+    if(!data||!validRoom(data.room)||typeof data.token!=='string'||!data.state||!Array.isArray(data.state.board)||(data.side!=='red'&&data.side!=='black'))throw new Error('服务响应无效');
+    online={room:data.room,token:data.token,side:data.side,status:data.state.status,signature:null,finished:false,rematch:[],round:data.round||1};
+    saveRoomSession({room:online.room,token:online.token,side:online.side});
+    rematchBusy=false;captures=[];captureFocus=null;resultEffect=null;aiAt=0;selected=null;targets=[];applyState(data.state,true,data);
+  }
+  function openRoom(join,inviteCode,retryKey){
+    if(onlineBusy)return;var code=join?(inviteCode===undefined?window.prompt('请输入六位房间号'):inviteCode):null;
+    if(join&&code===null)return;if(join){code=String(code).trim().toUpperCase();if(!validRoom(code)){notice='请输入有效的六位房间号';return;}}
+    leaveOnline();var epoch=onlineEpoch;onlineBusy=true;notice=join?'正在加入房间…':'正在创建房间…';
+    var joinKey=join?(retryKey||newJoinKey()):null, body=join?{room:code}:{mode:'room'};
+    if(joinKey){body.joinKey=joinKey;saveRoomSession({room:code,joinKey:joinKey,pending:true});}
+    post(join?'/api/join':'/api/create',body).then(function(data){if(epoch===onlineEpoch)adoptRoom(data);}).catch(function(e){
+      if(epoch!==onlineEpoch)return;
+      // Keep an uncertain join for an idempotent retry after refresh; definitive 4xx errors cannot have claimed a seat.
+      if(e.status>=400&&e.status<500)saveRoomSession(null);
+      notice=onlineError(e)+(joinKey&&!e.status?' · 可刷新页面重试':'');
+    }).finally(function(){if(epoch!==onlineEpoch)return;onlineBusy=false;if(online)poll(epoch);});
+  }
+  function restoreRoom(saved){
+    var epoch=onlineEpoch;onlineBusy=true;notice='正在恢复房间…';
+    var params=new URLSearchParams({room:saved.room,token:saved.token});
+    api('/api/state?'+params.toString(),{cache:'no-store'}).then(function(data){if(epoch===onlineEpoch)adoptRoom({room:saved.room,token:saved.token,side:saved.side,state:data.state,round:data.round,rematch:data.rematch});}).catch(function(e){if(epoch!==onlineEpoch)return;if(e.status===403||e.status===404)saveRoomSession(null);notice=onlineError(e);}).finally(function(){if(epoch!==onlineEpoch)return;onlineBusy=false;if(online)poll(epoch);});
+  }
+  function startFromInvite(){
+    if(!/^https?:$/.test(window.location.protocol))return;
+    var url=new URL(window.location.href), raw=url.searchParams.get('room'), saved=readRoomSession(), code;
+    if(raw!==null){
+      url.searchParams.delete('room');try{history.replaceState(history.state,'',url.href);}catch(e){}
+      code=raw.trim().toUpperCase();
+      if(!netAvailable){notice='此页面不支持房间对战，请使用邀请方的服务器链接';return;}
+      if(!validRoom(code)){notice='邀请链接无效，请让对方重新发送';return;}
+      if(!saved||saved.room!==code){openRoom(true,code);return;}
+    }
+    if(!netAvailable||!saved||!validRoom(saved.room))return;
+    if(saved.pending&&/^[a-f0-9]{48}$/.test(saved.joinKey||'')){openRoom(true,saved.room,saved.joinKey);return;}
+    if(typeof saved.token==='string'&&(saved.side==='red'||saved.side==='black'))restoreRoom(saved);
+  }
+  function loopbackAddress(){var host=window.location.hostname.toLowerCase();return host==='localhost'||host.endsWith('.localhost')||host==='[::1]'||host==='::1'||/^127\./.test(host)||host==='0.0.0.0';}
+  function copyInviteFallback(url){
+    var input=document.createElement('textarea'), copied=false;input.value=url;input.setAttribute('readonly','');
+    input.style.cssText='position:fixed;left:-9999px;top:0;opacity:0;user-select:text;-webkit-user-select:text';document.body.appendChild(input);
+    try{input.focus();input.select();input.setSelectionRange(0,input.value.length);copied=document.execCommand('copy');}catch(e){}
+    input.remove();if(!copied){try{window.prompt('请复制邀请链接，发送给对方：',url);}catch(e){} }return copied;
+  }
+  function inviteOpponent(){
+    if(!online||online.status!=='waiting')return;
+    var url=new URL(window.location.href);url.username='';url.password='';url.search='';url.hash='';url.searchParams.set('room',online.room);var link=url.href, epoch=onlineEpoch, loopback=loopbackAddress();
+    function report(copied){if(epoch!==onlineEpoch)return;showInviteFeedback(loopback?'本机地址仅自己可用，请用局域网地址打开后再邀请':copied?'邀请链接已复制，发给对方即可':'请手动复制邀请链接');}
+    function copy(){
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(link).then(function(){report(true);}).catch(function(){report(copyInviteFallback(link));});}
+      else report(copyInviteFallback(link));
+    }
+    // Never suggest a loopback URL in the native share sheet without warning.
+    if(!loopback&&navigator.share){navigator.share({title:'邀请你来下暗棋',text:'点击链接加入我的房间',url:link}).then(function(){if(epoch===onlineEpoch)showInviteFeedback('邀请链接已分享');}).catch(function(e){if(e&&e.name==='AbortError')return;copy();});}
+    else copy();
   }
   function clickOnline(x,y){
     if(!online||onlineBusy||online.status!=='playing'||turn!==online.side)return;
@@ -408,8 +468,9 @@
       if(selected){ctx.strokeStyle='#527b53';ctx.lineWidth=3;ctx.beginPath();ctx.arc(px(selected.x),py(selected.y),35,0,Math.PI*2);ctx.stroke();}}
     rect(14,806,672,380,12,'#eee0c4',online?accent():'#b89970');
     text(online?'房间 '+online.room+' · 你执'+(online.side==='red'?'红':'黑'):phase==='title'?'选择对弈':phase==='won'?'红方胜':phase==='lost'?'黑方胜':hotseat?(turn==='red'?'红方行棋':'黑方行棋'):turn==='red'?'红方行棋':'黑方思考中',38,844,online?20:25,accent());
-    text(notice||(phase==='title'?(netAvailable?'人机练习、同屏双人或房间对战':'人机练习或同屏双人'):hotseat?'同屏双人 · 轮流行棋':(online?'选择暗棋或己方明棋':'难度：'+DIFF_LABELS[DIFFICULTY]+' · 选择暗棋或己方明棋')),38,880,16,'#6b5947');
-    if(online&&online.status==='finished'){button(340,823,150,70,'退出房间',false);button(500,823,162,70,rematchAsked()?'等待中…':'再来一局',!rematchAsked());}
+    text(currentNotice()||(phase==='title'?(netAvailable?'人机练习、同屏双人或房间对战':'人机练习或同屏双人'):hotseat?'同屏双人 · 轮流行棋':(online?'选择暗棋或己方明棋':'难度：'+DIFF_LABELS[DIFFICULTY]+' · 选择暗棋或己方明棋')),38,880,16,'#6b5947');
+    if(online&&online.status==='waiting'){button(340,823,150,70,'邀请对手',true);button(500,823,162,70,'退出房间',false);}
+    else if(online&&online.status==='finished'){button(340,823,150,70,'退出房间',false);button(500,823,162,70,rematchAsked()?'等待中…':'再来一局',!rematchAsked());}
     else if(!online&&!hotseat&&(phase==='won'||phase==='lost')){button(340,823,150,70,'选择难度',false);button(500,823,162,70,'重新开始',true);}
     else if(online||phase!=='title') button(450,823,210,70,online?'退出房间':'重新开始',true);
     ctx.strokeStyle='#c9ad85';line(38,909,662,909);
@@ -436,7 +497,7 @@
       if(netAvailable){
         button(70,528,260,74,'创建房间',false);
         button(370,528,260,74,'加入房间',false);
-        text('联网对战须从同源服务器页面打开',350,646,16,'#f9e6c4','center');
+        text(notice||'联网对战须从同源服务器页面打开',350,646,16,'#f9e6c4','center');
       } else {
         text('同屏双人：两人共用一台设备轮流走棋',350,560,17,'#f9e6c4','center');
         text('联网对战请使用同源服务器版本',350,592,16,'#d8c39c','center');
@@ -471,7 +532,10 @@
       }
       resultEffect=null;return;
     }if(y>=1075&&y<=1149&&x>=38&&x<=336){musicOn=!musicOn;if(musicGain)musicGain.gain.setTargetAtTime(musicOn?MUSIC_VOLUME:0,audio.currentTime,.04);nextNote=0;return;}if(y>=1075&&y<=1149&&x>=364&&x<=662){effectsOn=!effectsOn;if(effectsGain)effectsGain.gain.setTargetAtTime(effectsOn?EFFECTS_VOLUME:0,audio.currentTime,.01);return;}if(y>=823&&y<=893){
-      if(online&&online.status==='finished'){
+      if(online&&online.status==='waiting'){
+        if(x>=340&&x<=490){inviteOpponent();return;}
+        if(x>=500&&x<=662){confirmExit=true;return;}
+      } else if(online&&online.status==='finished'){
         if(x>=340&&x<=490){confirmExit=true;return;}
         if(x>=500&&x<=662){requestRematch();return;}
       } else if(!online&&!hotseat&&(phase==='won'||phase==='lost')){
@@ -479,12 +543,13 @@
         if(x>=500&&x<=662){start();return;}
       } else if(x>=450&&x<=660&&(online||phase!=='title')){if(online){confirmExit=true;}else start();return;}
     }if(phase==='title'){
+      if(onlineBusy)return;
       if(y>=430&&y<=504){if(x>=70&&x<=330){pickDifficulty=true;return;}if(x>=370&&x<=630){start('hotseat');return;}}
       if(netAvailable&&y>=528&&y<=602){if(x>=70&&x<=330){openRoom(false);return;}if(x>=370&&x<=630){openRoom(true);return;}}
       if(x>=30&&x<=670&&y>=62&&y<=776){start();return;}
       return;
     }var col=Math.round((x-bx)/step),row=Math.round((y-by)/step);if(inside(col,row)&&Math.abs(x-(bx+col*step))<step*.49&&Math.abs(y-(by+row*step))<step*.49){var bc=flipped?8-col:col,br=flipped?9-row:row;if(online)clickOnline(bc,br);else clickBoard(bc,br);}}
-  canvas.addEventListener('pointerdown',pointer);window.addEventListener('keydown',function(e){if(e.key==='Enter'&&(phase==='title'||phase==='won'||phase==='lost')){e.preventDefault();enableAudio();start();}});window.addEventListener('resize',resize);window.addEventListener('orientationchange',resize);
+  canvas.addEventListener('pointerdown',pointer);window.addEventListener('keydown',function(e){if(!onlineBusy&&e.key==='Enter'&&(phase==='title'||phase==='won'||phase==='lost')){e.preventDefault();enableAudio();start();}});window.addEventListener('resize',resize);window.addEventListener('orientationchange',resize);
   if(window.visualViewport){window.visualViewport.addEventListener('resize',resize);window.visualViewport.addEventListener('scroll',resize);}
   window.addEventListener('pageshow',resize);
   // 测试钩子：仅供自动化验证难度强度，不影响对局。
@@ -493,10 +558,10 @@
     return {move:mv, nodes:searchNodes, limit:searchLimit, ms:Math.round(performance.now()-t0)};
   };
   window.__aiTest={start:function(mode){start(mode);},setDifficulty:setDifficulty,chooseMove:chooseMove,play:function(f,t){return play(f,t);}};
-  window.__gameState=function(){return {phase:phase,score:0,hearts:1,fps:fps,hero:{x:0,y:0},pickups:[],enemies:[],world:{w:W,h:H},turn:turn||null,winner:winner||null,room:online?online.room:null,side:online?online.side:null,notice:notice,confirmExit:confirmExit,rematch:online?(online.rematch||[]):[],round:online?(online.round||1):1,hotseat:hotseat,net:netAvailable,difficulty:DIFFICULTY,pickDifficulty:pickDifficulty};};
+  window.__gameState=function(){return {phase:phase,score:0,hearts:1,fps:fps,hero:{x:0,y:0},pickups:[],enemies:[],world:{w:W,h:H},turn:turn||null,winner:winner||null,room:online?online.room:null,side:online?online.side:null,notice:currentNotice(),confirmExit:confirmExit,rematch:online?(online.rematch||[]):[],round:online?(online.round||1):1,hotseat:hotseat,net:netAvailable,difficulty:DIFFICULTY,pickDifficulty:pickDifficulty};};
   window.__autoplay=function(){if(online||hotseat||captureFocus||phase!=='playing'||turn!=='red')return;var list=candidates('red');if(list.length){var m=list[randomInt(list.length)];play(m.from,m.to);}};
   function frame(t){if(prev){var dt=t-prev;if(dt>0)fps=fps*.9+1000/dt*.1;}prev=t;if(captureFocus&&t-captureFocus.started>=captureFocus.duration)captureFocus=null;if(!captureFocus&&resultEffect&&!resultEffect.shown)beginResult(t);if(resultEffect&&resultEffect.shown&&t-resultEffect.started>5000&&!(online&&online.status==='finished'))resultEffect=null;if(!captureFocus&&aiAt&&t>=aiAt){aiAt=0;ai();}if(!resultEffect)music();draw();requestAnimationFrame(frame);}
-  resize();requestAnimationFrame(frame);
+  startFromInvite();resize();requestAnimationFrame(frame);
 })();
 </script>
 </body></html>

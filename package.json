@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server/online.js",
     "serve": "node server/online.js",
-    "test": "node --test server/game.test.js",
+    "test": "node --test server/game.test.js server/rooms.test.js",
+    "test:invite": "node scripts/test-invite.js",
     "build:pages": "node scripts/build-pages.js",
     "test:ui": "node scripts/test-ui.js",
     "test:server": "node scripts/test-server.js",
