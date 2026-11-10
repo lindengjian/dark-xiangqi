@@ -277,6 +277,7 @@ async function createHost(url, options = {}) {
       window.__inviteTest.requests.some(r => r.path === '/api/state' && r.done));
     assert.equal(state.phase, 'playing');
     assert.match(state.notice, /等待/);
+    assert.equal(state.turnIndicator, null, 'a waiting room must not claim it is your turn');
     return {host, room: state.room};
   } catch (error) { await host.close(); throw error; }
 }
@@ -339,6 +340,83 @@ after(async () => {
   }
 });
 
+test('static offline page shows the current player turn', {timeout: 20000}, async () => {
+  const url = require('node:url').pathToFileURL(path.join(ROOT, 'index.html')).href;
+  const page = await Page.create(url);
+  try {
+    const title = await page.evaluate('__gameState()');
+    assert.equal(title.net, false);
+    assert.equal(title.turnIndicator, null);
+    await page.evaluate("__aiTest.start('hotseat')");
+    const state = await page.waitFor('offline red turn', s => s && s.turnIndicator?.label === '轮到红方行棋');
+    assert.equal(state.turnIndicator.side, 'red');
+    page.assertNoExceptions();
+  } finally { await page.close(); }
+});
+
+test('turn frame breathes only on active turns and respects reduced motion', {timeout: 20000}, async () => {
+  const page = await Page.create(base + '/');
+  try {
+    await page.send('Page.bringToFront');
+    await page.evaluate(`window.__borderSample = () => {
+      const canvas = document.getElementById('game');
+      const scale = Math.min(canvas.width / 700, canvas.height / 1200);
+      const ox = (canvas.width - 700 * scale) / 2, oy = (canvas.height - 1200 * scale) / 2;
+      const x = Math.round(ox + 17 * scale), y = Math.round(oy + 400 * scale);
+      return Array.from(canvas.getContext('2d').getImageData(x, y, 1, 1).data);
+    }; window.__nextDraw = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));`);
+    await page.evaluate('__nextDraw()');
+    const idle = await page.evaluate('__borderSample()');
+    await page.evaluate("__aiTest.start('hotseat')");
+    const samples = await page.evaluate(`(async () => {
+      const values = [];
+      for (let i = 0; i < 8; i++) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        values.push(__borderSample()[0]);
+      }
+      return values;
+    })()`);
+    assert.ok(Math.max(...samples) - Math.min(...samples) >= 8, 'the actual border pixels must pulse');
+    assert.ok(Math.max(...samples) > idle[0], 'active border must be brighter than the idle frame');
+
+    await page.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
+    await page.evaluate('__nextDraw()');
+    const reduced = await page.evaluate('__borderSample()');
+    const reducedLater = await page.evaluate('(async () => { await new Promise(r => setTimeout(r, 350)); await __nextDraw(); return __borderSample(); })()');
+    assert.deepEqual(reducedLater, reduced, 'reduced motion keeps the active border steady');
+    assert.ok(reduced[0] > idle[0], 'reduced motion retains a visible turn cue');
+
+    await page.evaluate("__aiTest.start(); __aiTest.play({x:0,y:6},{x:0,y:5})");
+    const waiting = await page.evaluate('(async () => { await __nextDraw(); return {state: __gameState(), pixel: __borderSample()}; })()');
+    assert.equal(waiting.state.turnIndicator.active, false);
+    assert.deepEqual(waiting.pixel, idle, 'computer turn has no illuminated border');
+    page.assertNoExceptions();
+  } finally { await page.close(); }
+});
+
+test('turn indicator follows local practice and hotseat turns', {timeout: 20000}, async () => {
+  const page = await Page.create(base + '/');
+  try {
+    assert.equal((await page.evaluate('__gameState()')).turnIndicator, null, 'title screen has no turn');
+    await page.evaluate("__aiTest.start('hotseat')");
+    let state = await page.waitFor('hotseat red turn', s => s && s.turnIndicator?.label === '轮到红方行棋');
+    assert.deepEqual(state.turnIndicator, {label: '轮到红方行棋', active: true, side: 'red'});
+    await page.evaluate('__aiTest.play({x:0,y:6},{x:0,y:5})');
+    state = await page.waitFor('hotseat black turn', s => s && s.turnIndicator?.label === '轮到黑方行棋');
+    assert.deepEqual(state.turnIndicator, {label: '轮到黑方行棋', active: true, side: 'black'});
+    await page.waitFor('hotseat announcement', () => document.querySelector('[role="status"]')?.textContent === '轮到黑方行棋');
+
+    await page.evaluate('__aiTest.start()');
+    state = await page.waitFor('practice red turn', s => s && s.turnIndicator?.label === '轮到你行棋');
+    assert.deepEqual(state.turnIndicator, {label: '轮到你行棋', active: true, side: 'red'});
+    const afterMove = await page.evaluate('(__aiTest.play({x:0,y:6},{x:0,y:5}), __gameState())');
+    assert.deepEqual(afterMove.turnIndicator, {label: '电脑思考中', active: false, side: 'black'});
+    state = await page.waitFor('practice turn returns after AI', s => s && s.turnIndicator?.label === '轮到你行棋');
+    assert.equal(state.turn, 'red');
+    page.assertNoExceptions();
+  } finally { await page.close(); }
+});
+
 test('copied invitation joins an isolated black client and host observes the join', {timeout: 30000}, async () => {
   const {host, room} = await createHost(base + '/');
   let guest;
@@ -354,6 +432,8 @@ test('copied invitation joins an isolated black client and host observes the joi
       s.phase === 'playing' && /轮到你|你.*行棋/.test(s.notice) &&
       window.__inviteTest.requests.some(r => r.path === '/api/state' && r.gameStatus === 'playing'));
     assert.equal(hostState.room, room);
+    assert.deepEqual(hostState.turnIndicator, {label: '轮到你行棋', active: true, side: 'red'});
+    assert.deepEqual(joined.turnIndicator, {label: '等待对方行棋', active: false, side: 'red'});
 
     // Reloading either player restores that tab's identity, without taking a
     // second seat or reusing the consumed invitation parameter.
@@ -376,6 +456,20 @@ test('copied invitation joins an isolated black client and host observes the joi
     await host.click(62, 460);
     const synced = await guest.waitFor('guest sees the host move', s => s && s.side === 'black' && s.turn === 'black');
     assert.equal(synced.room, room);
+    assert.deepEqual(synced.turnIndicator, {label: '轮到你行棋', active: true, side: 'black'});
+    const hostAfterMove = await host.waitFor('host sees opponent turn', s => s && s.turn === 'black');
+    assert.deepEqual(hostAfterMove.turnIndicator, {label: '等待对方行棋', active: false, side: 'black'});
+    await guest.waitFor('accessible turn announcement', () => document.querySelector('[role="status"]')?.textContent === '轮到你行棋，你执黑方');
+
+    // Black's view is rotated: logical (0,3) -> (0,4) appears on the right.
+    await guest.waitFor('guest polling idle', () => window.__inviteTest.requests.filter(r => r.path === '/api/state').every(r => r.done));
+    await guest.click(638, 532);
+    await guest.waitFor('guest selects a pawn', () => window.__inviteTest.requests.some(r => r.path === '/api/moves' && r.done));
+    await guest.click(638, 460);
+    const redAgain = await host.waitFor('red turn returns', s => s && s.turn === 'red');
+    assert.deepEqual(redAgain.turnIndicator, {label: '轮到你行棋', active: true, side: 'red'});
+    const blackWaiting = await guest.waitFor('black waits for red', s => s && s.turn === 'red');
+    assert.deepEqual(blackWaiting.turnIndicator, {label: '等待对方行棋', active: false, side: 'red'});
     host.assertNoExceptions(); guest.assertNoExceptions();
   } finally { if (guest) await guest.close(); await host.close(); }
 });

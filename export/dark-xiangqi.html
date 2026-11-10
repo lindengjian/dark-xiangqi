@@ -12,6 +12,14 @@
   if (!canvas) { canvas = document.createElement('canvas'); canvas.id = 'game'; document.body.appendChild(canvas); }
   canvas.style.cssText += ';display:block;width:100vw;height:100vh;height:100dvh;touch-action:none;outline:none;background:#211a16';
   canvas.tabIndex = 0;
+  // Canvas text is not exposed to screen readers; announce turn changes once.
+  var turnAnnouncement = document.createElement('div');
+  turnAnnouncement.setAttribute('role', 'status');
+  turnAnnouncement.setAttribute('lang', 'zh-CN');
+  turnAnnouncement.setAttribute('aria-live', 'polite');
+  turnAnnouncement.setAttribute('aria-atomic', 'true');
+  turnAnnouncement.style.cssText = 'position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0';
+  document.body.appendChild(turnAnnouncement);
   var ctx = canvas.getContext('2d'), W = 700, H = 1200, scale = 1, ox = 0, oy = 0;
   var BACK = ['rook','horse','elephant','advisor','king','advisor','elephant','horse','rook'];
   var names = {red:{rook:'俥',horse:'傌',elephant:'相',advisor:'仕',king:'帥',cannon:'炮',pawn:'兵'},black:{rook:'車',horse:'馬',elephant:'象',advisor:'士',king:'將',cannon:'砲',pawn:'卒'}};
@@ -412,6 +420,39 @@
   // and a warm 花青 for practice/title where there is no room identity.
   var THEME={red:'#a12e25',black:'#2b2a27',base:'#2c4f6b'};
   function accent(){return online?(online.side==='red'?THEME.red:THEME.black):THEME.base;}
+  // The room can be in phase=playing while still waiting for its second player.
+  function turnIndicator(){
+    if(phase!=='playing'||!turn||(online&&online.status!=='playing'))return null;
+    if(hotseat&&!online)return {label:'轮到'+(turn==='red'?'红':'黑')+'方行棋',active:true,side:turn};
+    var mine=turn===(online?online.side:'red');
+    return {label:mine?'轮到你行棋':online?'等待对方行棋':'电脑思考中',active:mine,side:turn};
+  }
+  function drawTurnIndicator(indicator,x,y,w,h,size){
+    var fill=indicator.active?(indicator.side==='red'?'#963d2e':'#2b2a27'):'#dec8a7';
+    rect(x,y,w,h,7,fill,null);
+    text(indicator.label,x+w/2,y+h/2,size,indicator.active?'#f9e6c4':'#554334','center');
+  }
+  // Cache the soft frame once; only its opacity changes during the turn.
+  var turnGlowBuffer=document.createElement('canvas'), turnGlowCtx=turnGlowBuffer.getContext('2d');
+  turnGlowBuffer.width=W;turnGlowBuffer.height=810;
+  turnGlowCtx.beginPath();turnGlowCtx.roundRect(17,49,666,740,10);
+  turnGlowCtx.lineWidth=4;turnGlowCtx.strokeStyle='#f9e6c4';
+  turnGlowCtx.shadowColor='#f5d076';turnGlowCtx.shadowBlur=22;turnGlowCtx.stroke();
+  var reducedMotion=window.matchMedia?window.matchMedia('(prefers-reduced-motion: reduce)'):null;
+  var glowSide=null, glowStarted=0;
+  function drawTurnGlow(indicator,now){
+    if(!indicator||!indicator.active){glowSide=null;return;}
+    if(glowSide!==indicator.side){glowSide=indicator.side;glowStarted=now;}
+    if(document.hidden)return;
+    var strength=reducedMotion&&reducedMotion.matches ? .72 : .64+.36*Math.cos((now-glowStarted)*Math.PI*2/2600);
+    ctx.save();ctx.globalAlpha=strength;ctx.drawImage(turnGlowBuffer,0,0);ctx.restore();
+  }
+  function syncTurnAnnouncement(indicator){
+    var message=indicator?indicator.label+(online&&indicator.active?'，你执'+(online.side==='red'?'红':'黑')+'方':''):
+      online&&online.status==='waiting'?'等待另一位玩家加入':
+      phase==='won'||phase==='lost'?(winner==='red'?'红方获胜':'黑方获胜'):'';
+    if(turnAnnouncement.textContent!==message)turnAnnouncement.textContent=message;
+  }
   function syncFlip(){flipped=!!(online&&online.side==='black');}
   function px(x){return bx+(flipped?8-x:x)*step;}
   function py(y){return by+(flipped?9-y:y)*step;}
@@ -446,7 +487,7 @@
       text('点击其他地方查看棋盘',350,700,16,win?'#9b8060':'#a7abb1','center');
     } else text(hotseat?'点击画面继续':'下方可重新开始或换难度',350,675,17,win?'#9b8060':'#a7abb1','center');
   }
-  function draw(){
+  function draw(now){
     // Paint the whole backing store first so the letterboxed side areas on wide
     // screens carry the same backdrop instead of flat black bars.
     ctx.setTransform(1,0,0,1,0,0);
@@ -456,7 +497,12 @@
     ctx.clearRect(0,0,W,H);var bg=ctx.createLinearGradient(0,0,W,H);bg.addColorStop(0,'#31271f');bg.addColorStop(1,'#161713');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
     rect(14,46,672,746,12,'#735038','#c09b6b');rect(24,56,652,726,5,'#d5ae77','#f1d29c');
     var wood=ctx.createLinearGradient(24,56,676,782);wood.addColorStop(0,'#e9cb98');wood.addColorStop(.5,'#d9b27c');wood.addColorStop(1,'#c69c67');rect(30,62,640,714,2,wood,'#88613e');
-    text('弈  ·  暗棋',28,24,24,'#e8d2a8');text('一局藏锋，方寸见心',672,24,15,'#ab997b','right');
+    var indicator=turnIndicator();
+    drawTurnGlow(indicator,now);
+    text('弈  ·  暗棋',28,24,24,'#e8d2a8');
+    text(online?'房间 '+online.room+' · 你执'+(online.side==='red'?'红':'黑'):'一局藏锋，方寸见心',672,24,15,'#e8d2a8','right');
+    if(indicator)drawTurnIndicator(indicator,225,4,250,40,19);
+    syncTurnAnnouncement(indicator);
     ctx.strokeStyle='#785336';ctx.lineWidth=1.15;
     for(var i=0;i<10;i++)line(bx,by+i*step,bx+8*step,by+i*step);
     for(var j=0;j<9;j++){if(j===0||j===8)line(bx+j*step,by,bx+j*step,by+9*step);else{line(bx+j*step,by,bx+j*step,by+4*step);line(bx+j*step,by+5*step,bx+j*step,by+9*step);}}
@@ -466,8 +512,11 @@
       board.forEach(function(row,y){row.forEach(function(p,x){if(p)drawPiece(p,px(x),py(y));});});
       if(selected){ctx.strokeStyle='#527b53';ctx.lineWidth=3;ctx.beginPath();ctx.arc(px(selected.x),py(selected.y),35,0,Math.PI*2);ctx.stroke();}}
     rect(14,806,672,380,12,'#eee0c4',online?accent():'#b89970');
-    text(online?'房间 '+online.room+' · 你执'+(online.side==='red'?'红':'黑'):phase==='title'?'选择对弈':phase==='won'?'红方胜':phase==='lost'?'黑方胜':hotseat?(turn==='red'?'红方行棋':'黑方行棋'):turn==='red'?'红方行棋':'黑方思考中',38,844,online?20:25,accent());
-    text(currentNotice()||(phase==='title'?(netAvailable?'人机练习、同屏双人或房间对战':'人机练习或同屏双人'):hotseat?'同屏双人 · 轮流行棋':(online?'选择暗棋或己方明棋':'难度：'+DIFF_LABELS[DIFFICULTY]+' · 选择暗棋或己方明棋')),38,880,16,'#6b5947');
+    if(indicator)drawTurnIndicator(indicator,30,821,300,46,25);
+    else text(online?'房间 '+online.room+' · 你执'+(online.side==='red'?'红':'黑'):phase==='title'?'选择对弈':phase==='won'?'红方胜':'黑方胜',38,844,online?20:25,accent());
+    var detail=currentNotice();
+    if(indicator&&online&&(detail==='轮到你行棋'||detail==='等待对方行棋'))detail=indicator.active?'选择暗棋或己方明棋':'请等待对方落子';
+    text(detail||(phase==='title'?(netAvailable?'人机练习、同屏双人或房间对战':'人机练习或同屏双人'):hotseat?'同屏双人 · 轮流行棋':(online?'选择暗棋或己方明棋':'难度：'+DIFF_LABELS[DIFFICULTY]+' · 选择暗棋或己方明棋')),38,880,16,'#6b5947');
     if(online&&online.status==='waiting'){button(340,823,150,70,'邀请对手',true);button(500,823,162,70,'退出房间',false);}
     else if(online&&online.status==='finished'){button(340,823,150,70,'退出房间',false);button(500,823,162,70,rematchAsked()?'等待中…':'再来一局',!rematchAsked());}
     else if(!online&&!hotseat&&(phase==='won'||phase==='lost')){button(340,823,150,70,'选择难度',false);button(500,823,162,70,'重新开始',true);}
@@ -557,9 +606,9 @@
     return {move:mv, nodes:searchNodes, limit:searchLimit, ms:Math.round(performance.now()-t0)};
   };
   window.__aiTest={start:function(mode){start(mode);},setDifficulty:setDifficulty,chooseMove:chooseMove,play:function(f,t){return play(f,t);}};
-  window.__gameState=function(){return {phase:phase,score:0,hearts:1,fps:fps,hero:{x:0,y:0},pickups:[],enemies:[],world:{w:W,h:H},turn:turn||null,winner:winner||null,room:online?online.room:null,side:online?online.side:null,notice:currentNotice(),confirmExit:confirmExit,rematch:online?(online.rematch||[]):[],round:online?(online.round||1):1,hotseat:hotseat,net:netAvailable,difficulty:DIFFICULTY,pickDifficulty:pickDifficulty};};
+  window.__gameState=function(){return {phase:phase,score:0,hearts:1,fps:fps,hero:{x:0,y:0},pickups:[],enemies:[],world:{w:W,h:H},turn:turn||null,turnIndicator:turnIndicator(),winner:winner||null,room:online?online.room:null,side:online?online.side:null,notice:currentNotice(),confirmExit:confirmExit,rematch:online?(online.rematch||[]):[],round:online?(online.round||1):1,hotseat:hotseat,net:netAvailable,difficulty:DIFFICULTY,pickDifficulty:pickDifficulty};};
   window.__autoplay=function(){if(online||hotseat||captureFocus||phase!=='playing'||turn!=='red')return;var list=candidates('red');if(list.length){var m=list[randomInt(list.length)];play(m.from,m.to);}};
-  function frame(t){if(prev){var dt=t-prev;if(dt>0)fps=fps*.9+1000/dt*.1;}prev=t;if(captureFocus&&t-captureFocus.started>=captureFocus.duration)captureFocus=null;if(!captureFocus&&resultEffect&&!resultEffect.shown)beginResult(t);if(resultEffect&&resultEffect.shown&&t-resultEffect.started>5000&&!(online&&online.status==='finished'))resultEffect=null;if(!captureFocus&&aiAt&&t>=aiAt){aiAt=0;ai();}if(!resultEffect)music();draw();requestAnimationFrame(frame);}
+  function frame(t){if(prev){var dt=t-prev;if(dt>0)fps=fps*.9+1000/dt*.1;}prev=t;if(captureFocus&&t-captureFocus.started>=captureFocus.duration)captureFocus=null;if(!captureFocus&&resultEffect&&!resultEffect.shown)beginResult(t);if(resultEffect&&resultEffect.shown&&t-resultEffect.started>5000&&!(online&&online.status==='finished'))resultEffect=null;if(!captureFocus&&aiAt&&t>=aiAt){aiAt=0;ai();}if(!resultEffect)music();draw(t);requestAnimationFrame(frame);}
   startFromInvite();resize();requestAnimationFrame(frame);
 })();
 </script>
